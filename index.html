@@ -374,7 +374,7 @@
                 Pilotes importés de webresults (badge <span class="text-sky-300 font-semibold">FDS</span>) : temps remplis automatiquement à chaque collage ; DNF et passages sans arrivée écartés ; les passages valides sont répartis dans l'ordre : manche(s) d'essai puis manches chronométrées (format réglable dans les paramètres de l'événement).
                 Genre et catégorie sont retrouvés dans la mémoire de la page (pilotes et véhicules déjà rencontrés) ; sinon badge « à compléter ».
                 Cliquez sur un temps pour ses actions (pénalité, écarter, décaler, valider). <span class="text-emerald-300 font-semibold">Vert</span> : meilleur temps retenu ; exposant <span class="text-amber-300 font-semibold">+2</span> : pénalité incluse ; contour <span class="text-amber-300 font-semibold">orangé ⚠</span> : passage à vérifier ; cadre pointillé : pénalité reçue d'un poste avant le temps (appliquée au collage webresults).
-                Pilotes saisis à la main : tapez le temps (1:20.5 ou 80,5) puis Entrée.
+                Sans webresults : cliquez sur la case puis « Saisir un temps à la main » (1:20.5 ou 80,5).
             </p>
             <table class="w-full text-left border-collapse min-w-[1200px]">
                 <thead>
@@ -1605,7 +1605,7 @@
             const isTrial = isTrialSlot(i);
             const colCls = i % 2 === 0 ? 'col-a' : 'col-b';
             const closed = i <= state.closedThrough;
-            const readOnly = d.source === 'fds' || (d.planned && !(d.times || []).some(t => String(t).trim()));
+            const readOnly = true;   // toutes les cases en lecture ; saisie et corrections par le menu de la case
             if (!readOnly) {
                 const s = x.slots[i];
                 const pen = s ? s.pen : 0;
@@ -1645,7 +1645,7 @@
         // ---------- Menu d'actions d'une case ----------
         function manualTimePrompt(bib, i) {
             const d = state.drivers.find(x => x.number === bib); if (!d) return;
-            const v = prompt(`Temps de ${d.name} — ${slotLong(i)} (ex. 1:20.5 ou 80,5) :`, '');
+            const v = prompt(`Temps de ${d.name} — ${slotLong(i)} (ex. 1:20.5 ou 80,5) :`, d.times[i] || '');
             if (v === null || !v.trim()) return;
             updateManualTime(d.id, i, v.trim());
         }
@@ -1660,7 +1660,8 @@
             let h = `<div class="mh"><b>n° ${esc(d.number)} ${esc(firstName(d.name))} ${esc(lastName(d.name))}</b> · ${slotLong(i)}`;
             if (s && !s.gap) {
                 const k = s.key;
-                h += `<br>Temps brut <span class="font-mono">${fmt(s.t)}</span>` + (s.p ? ` · passage FDS ${s.p.run}` : '');
+                const mt = !!s.manual, did = esc(d.id);
+                h += `<br>Temps brut <span class="font-mono">${fmt(s.t)}</span>` + (s.p ? ` · passage FDS ${s.p.run}` : mt ? ' · saisi à la main' : '');
                 const man = s.manPen === undefined ? (s.pen || 0) : s.manPen;
                 if (man) h += `<br><span class="text-amber-300">Pénalité manuelle : +${man} s</span>`;
                 for (const inf of (s.infs || [])) h += `<br><span class="${inf.type === 'E' ? 'text-rose-300' : 'text-amber-300'}">${PEN_TYPES[inf.type].label}${PEN_TYPES[inf.type].sec ? ' +' + PEN_TYPES[inf.type].sec + ' s' : ''} · ${esc(inf.manual ? 'saisie au PC course' : 'poste ' + inf.poste)} · ${hhmm(inf.at)}</span>`;
@@ -1668,16 +1669,20 @@
                 h += '</div>';
                 if (s.susp) h += b('✔ Valider ce passage', `setDecision('${k}','valid')`) + b('✕ Écarter ce passage', `setDecision('${k}','excluded')`) + '<div class="sep"></div>';
                 if (!isTrialSlot(i) && !s.ep) {
-                    h += b('➕ Pénalité +2 s (saisie manuelle)', `addPen('${k}',2)`) + b('➕ Pénalité +5 s (saisie manuelle)', `addPen('${k}',5)`)
+                    h += (mt ? b('➕ Pénalité +2 s (saisie manuelle)', `addManualPen('${did}',${i},2)`) + b('➕ Pénalité +5 s (saisie manuelle)', `addManualPen('${did}',${i},5)`)
+                             : b('➕ Pénalité +2 s (saisie manuelle)', `addPen('${k}',2)`) + b('➕ Pénalité +5 s (saisie manuelle)', `addPen('${k}',5)`))
                        + b('⛔ Erreur de parcours (temps annulé)', `addManualEP('${esc(d.number)}',${i})`, 'style="color:#fca5a5"');
-                    if (man) h += b('↺ Retirer la pénalité manuelle', `clearPen('${k}')`);
+                    if (man) h += b('↺ Retirer la pénalité manuelle', mt ? `clearManualPen('${did}',${i})` : `clearPen('${k}')`);
                 }
                 for (const inf of (s.infs || [])) h += inf.manual
                     ? b(`↺ Retirer l'erreur de parcours (saisie au PC)`, `removeManualInf('${inf.id}')`)
                     : b(`↺ Annuler l'infraction du poste ${esc(inf.poste)} (${PEN_TYPES[inf.type].short})`, `cancelInf('${inf.id}')`);
                 h += '<div class="sep"></div>';
-                if (!s.susp) h += b('✕ Écarter ce temps (passage refait)', `setDecision('${k}','excluded')`);
-                h += b('→ Décaler vers la manche suivante', `addGap('${esc(d.number)}',${i})`);
+                if (mt) h += b('✎ Modifier le temps', `manualTimePrompt('${esc(d.number)}',${i})`) + b('✕ Effacer le temps', `updateManualTime('${did}',${i},'')`);
+                else {
+                    if (!s.susp) h += b('✕ Écarter ce temps (passage refait)', `setDecision('${k}','excluded')`);
+                    h += b('→ Décaler vers la manche suivante', `addGap('${esc(d.number)}',${i})`);
+                }
             } else if (s && s.gap && !s.auto) {
                 h += '<br>Manche marquée non courue / annulée.</div>' + b('↺ Rétablir (annuler le décalage)', `removeGap('${esc(d.number)}',${i})`);
             } else if (d.source !== 'fds' && !(x.pending && x.pending[i])) {
