@@ -283,12 +283,13 @@
                 <div class="text-sm text-slate-400">PC course connecté : <b id="liveUser" class="text-slate-200"></b> · <button type="button" onclick="liveSignOut()" class="underline hover:text-white">se déconnecter</button></div>
                 <div id="liveNoCode" class="flex flex-wrap items-center gap-3">
                     <button type="button" onclick="liveOpen()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold py-2.5 px-4 rounded-xl">📡 Ouvrir la liaison pour cet événement</button>
+                    <span id="liveNameHint" class="text-sm text-amber-300"></span>
                     <span class="text-sm text-slate-400">Un code d'épreuve est créé : les commissaires le saisissent dans leur page, puis vous acceptez leur téléphone ci-dessous.</span>
                 </div>
                 <div id="liveBox" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
                     <div class="bg-slate-900/60 rounded-xl p-4 border border-slate-700">
                         <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Code de l'épreuve</div>
-                        <div id="liveCode" class="text-4xl font-black tracking-widest text-sky-300 font-mono my-1"></div>
+                        <div id="liveCode" class="text-3xl font-black tracking-wider text-sky-300 font-mono my-1 whitespace-nowrap"></div>
                         <div class="text-xs text-slate-400">À donner aux commissaires au briefing.</div>
                         <button type="button" onclick="liveNewCode()" class="mt-2 text-xs text-slate-400 underline hover:text-white">Créer un nouveau code</button>
                     </div>
@@ -2265,9 +2266,9 @@
             if (changed) renderAll(); else renderLive();
         }
         function liveCodeFromName() {
-            const skip = new Set(['SLALOM', 'DE', 'DU', 'DES', 'LA', 'LE', 'LES', 'D', 'L', 'ET', 'CHALLENGE', 'COURSE', 'ASAT']);
+            const skip = new Set(['SLALOM', 'DE', 'DU', 'DES', 'LA', 'LE', 'LES', 'D', 'L', 'ET', 'CHALLENGE', 'COURSE', 'ASAT', 'AUTOMOBILE', 'AUTO', 'EVENEMENT', 'SANS', 'NOM']);
             const words = String(raceName()).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().split(/[^A-Z0-9]+/).filter(w => w && !skip.has(w) && /[A-Z]/.test(w));
-            const base = (words[0] || 'ASAT').slice(0, 10);
+            const base = (words[0] || 'ASAT').slice(0, 8);
             return base + '-' + String(Math.floor(1000 + Math.random() * 9000));
         }
         async function liveOpen() {
@@ -2333,6 +2334,7 @@
             el('liveMain').classList.toggle('hidden', !logged);
             el('liveNoCode').classList.toggle('hidden', !!code);
             el('liveBox').classList.toggle('hidden', !code);
+            el('liveNameHint').textContent = state.meta.name ? '' : 'Conseil : donnez d\'abord un nom à l\'événement, le code en est tiré.';
             const pend = liveDevices.filter(d => d.status === 'pending');
             const st = el('liveState');
             st.textContent = !has ? 'Hors ligne' : !logged ? 'Non connecté' : !code ? 'Connecté · liaison fermée' : liveErrMsg ? 'Liaison perturbée' : `En direct · ${liveDevices.filter(d => d.status === 'ok').length} poste(s)`;
