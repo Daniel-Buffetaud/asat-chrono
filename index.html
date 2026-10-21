@@ -307,6 +307,28 @@
             </div>
         </section>
 
+        <section id="pontSection" class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-indigo-700/60 no-print">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <h2 class="text-xl font-bold text-indigo-300">🔗 Pont webresults (temps automatiques)</h2>
+                <span id="pontState" class="text-xs font-bold px-3 py-1 rounded-full bg-slate-700 text-slate-300">Inactif</span>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 text-sm">
+                <div class="space-y-2 text-slate-300">
+                    <p><b>Une seule fois :</b> faites glisser ce bouton dans la barre des favoris du navigateur.</p>
+                    <p><a id="pontLink" href="#" draggable="true" onclick="event.preventDefault(); alert('Faites glisser ce bouton dans la barre des favoris, puis cliquez sur le favori depuis la page webresults.')" class="inline-block bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-xl cursor-grab">⏱ Pont ASAT Chrono</a> <button type="button" onclick="copyPontCode(this)" class="ml-2 text-xs text-indigo-300 underline hover:text-white">copier le code du favori</button></p>
+                    <p class="text-xs text-slate-500">Si le glisser-déposer ne marche pas : créez un favori quelconque, puis remplacez son adresse par le code copié.</p>
+                    <p><b>Le jour de la course :</b> ouvrez webresults dans la vue « Last Started/Arrived », puis cliquez sur le favori « ⏱ Pont ASAT Chrono ». ASAT Chrono s'ouvre dans un nouvel onglet et reçoit les temps à chaque nouveau passage. Gardez les deux onglets ouverts.</p>
+                </div>
+                <div class="bg-slate-900/60 rounded-xl p-4 border border-slate-700 space-y-1">
+                    <div><span class="text-slate-400">Événement alimenté :</span> <b id="pontEvent" class="text-slate-200">—</b></div>
+                    <div><span class="text-slate-400">Dernière mise à jour :</span> <span id="pontLast" class="text-slate-200">—</span></div>
+                    <div><span class="text-slate-400">Source :</span> <span id="pontSrc" class="text-slate-200">—</span></div>
+                    <div id="pontErr" class="text-amber-300"></div>
+                    <label class="inline-flex items-center gap-2 text-slate-300 pt-1"><input id="pontPause" type="checkbox" onchange="pontTogglePause(this.checked)" class="w-4 h-4 accent-indigo-500"> Mettre le pont en pause</label>
+                </div>
+            </div>
+        </section>
+
         <section id="raceSection" class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-slate-700 no-print">
             <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-4">
                 <div>
@@ -1485,13 +1507,13 @@
             for (const id of ['eventParamsGrid', 'raceSection', 'driverFormSection', 'penSection', 'entrySection', 'filterSection', 'rankingsSection', 'vizSection', 'btnPaste', 'btnPastePen', 'btnPrintRank', 'btnPrintEntry', 'btnExportEvent', 'btnReset', 'btnDeleteEvent'])
                 document.getElementById(id).classList.toggle('hidden', champ);
             document.getElementById('champSection').classList.toggle('hidden', !champ);
-            if (champ) document.getElementById('liveSection').classList.add('hidden');
+            if (champ) { document.getElementById('liveSection').classList.add('hidden'); document.getElementById('pontSection').classList.add('hidden'); }
             document.getElementById('evTabs').classList.toggle('hidden', champ);
             document.getElementById('pilotsSection').classList.toggle('hidden', champ || evTab !== 'pilotes');
             if (champ) { renderChampionship(view.slice(6)); return; }
             // Course : déroulement, pénalités, tableau des temps, analyse ; Classements : filtre + classements H/F
-            const TAB_SECTIONS = { course: ['liveSection', 'raceSection', 'penSection', 'entrySection', 'vizSection'], pilotes: [], classements: ['filterSection', 'rankingsSection'] };
-            for (const id of ['liveSection', 'raceSection', 'driverFormSection', 'penSection', 'entrySection', 'filterSection', 'rankingsSection', 'vizSection'])
+            const TAB_SECTIONS = { course: ['liveSection', 'pontSection', 'raceSection', 'penSection', 'entrySection', 'vizSection'], pilotes: [], classements: ['filterSection', 'rankingsSection'] };
+            for (const id of ['liveSection', 'pontSection', 'raceSection', 'driverFormSection', 'penSection', 'entrySection', 'filterSection', 'rankingsSection', 'vizSection'])
                 document.getElementById(id).classList.toggle('hidden', !(TAB_SECTIONS[evTab] || []).includes(id));
             // le formulaire ne sert plus qu'à modifier un pilote (bouton « Modifier » du tableau des temps)
             document.getElementById('driverFormSection').classList.toggle('hidden', evTab !== 'pilotes' || !document.getElementById('editingId').value);
@@ -1514,6 +1536,7 @@
             renderViz(derived);
             if (evTab === 'pilotes') renderRoster();
             liveAfterRender();
+            renderPont();
         }
 
         function renderStatus(derived) {
@@ -2365,6 +2388,84 @@
                     <span class="space-x-1">${d.status !== 'ok' ? btn('Accepter', 'ok', 'bg-emerald-600 hover:bg-emerald-500 text-white') : ''}${d.status !== 'refused' ? btn(d.status === 'ok' ? 'Retirer' : 'Refuser', 'refused', 'bg-rose-500/20 hover:bg-rose-600 text-rose-200 hover:text-white') : ''}</span></div>`;
             }).join('') : '<div class="text-slate-500">Aucun téléphone pour le moment. Chaque commissaire saisit le code dans sa page puis touche « Rejoindre ».</div>';
         }
+
+        // ===================== Pont webresults =====================
+        // Le favori « Pont ASAT Chrono », cliqué sur la page webresults, lit le texte affiché (comme un copier-coller)
+        // et l'envoie à cet onglet à chaque changement ; aucune requête n'est faite aux serveurs de FDS.
+        const pont = { evId: null, at: null, n: 0, last: '', err: '', src: '', paused: false };
+        function pontBookmarklet() {
+            const T = location.origin + location.pathname;
+            const code = `(()=>{const T=${JSON.stringify(T)},O=new URL(T).origin;if(window.__asatPont){window.__asatPont.open();return;}`
+                + `const b=document.createElement('div');b.style.cssText='position:fixed;z-index:2147483647;right:12px;bottom:12px;background:#1f5fae;color:#fff;font:600 13px system-ui,sans-serif;padding:8px 12px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer';document.body.appendChild(b);`
+                + `let w=null,last='',t=null,n=0;const open=()=>{w=window.open(T+'#pont','asatchrono');setTimeout(()=>send(true),2500);};`
+                + `const send=f=>{if(!w||w.closed){b.textContent='ASAT Chrono fermé : cliquer ici pour le rouvrir';b.style.background='#b91c1c';return;}const x=document.body.innerText;if(!f&&x===last)return;last=x;try{w.postMessage({type:'asat-webresults',v:1,text:x,url:location.href,at:Date.now()},O);n++;b.textContent='Pont ASAT Chrono ✓ '+new Date().toLocaleTimeString('fr-FR')+' · '+n+' envoi(s)';b.style.background='#1f5fae';}catch(e){b.textContent='Pont : envoi impossible';b.style.background='#b91c1c';}};`
+                + `b.onclick=()=>{if(!w||w.closed)open();else send(true);};`
+                + `window.addEventListener('message',e=>{if(e.origin===O&&e.data&&e.data.type==='asat-hello')send(true);});`
+                + `new MutationObserver(()=>{clearTimeout(t);t=setTimeout(()=>send(false),1500);}).observe(document.body,{subtree:true,childList:true,characterData:true});`
+                + `setInterval(()=>send(false),15000);window.__asatPont={open,send};b.textContent='Pont ASAT Chrono : ouverture…';open();})()`;
+            return 'javascript:' + encodeURIComponent(code);
+        }
+        async function copyPontCode(btn) {
+            const t = pontBookmarklet();
+            try { await navigator.clipboard.writeText(t); btn.textContent = 'code copié ✓'; } catch (e) { prompt('Copiez ce code :', t); }
+        }
+        function pontTogglePause(v) { pont.paused = !!v; renderPont(); }
+        function pontReceive(text, origin) {
+            pont.src = origin;
+            if (pont.paused) { pont.err = 'Pont en pause : les temps reçus ne sont pas importés.'; renderPont(); return; }
+            if (view !== 'event') { pont.err = 'Affichez l\'événement de la course pour recevoir les temps.'; renderPont(); return; }
+            if (!pont.evId) pont.evId = state.id;
+            if (state.id !== pont.evId) {
+                const ev = db.events[pont.evId];
+                pont.err = `Les temps alimentent l'événement « ${ev ? (ev.meta.name || 'sans nom') : '?'} » : réaffichez-le (ou rechargez cet onglet pour changer d'événement).`;
+                renderPont(); return;
+            }
+            const parsed = parseWebresults(text);
+            const sig = JSON.stringify(parsed.rows);
+            if (sig === pont.last) { pont.at = new Date().toISOString(); pont.err = ''; renderPont(); return; }
+            const res = applyWebresults(parsed);
+            if (!res.ok) { pont.err = res.msg; renderPont(); return; }
+            pont.last = sig; pont.at = new Date().toISOString(); pont.n++; pont.err = '';
+            document.getElementById('raceNameInput').value = state.meta.name;
+            document.getElementById('raceDateInput').value = state.meta.date;
+            renderAll();
+        }
+        window.addEventListener('message', e => {
+            const d = e.data;
+            if (!d || d.type !== 'asat-webresults' || typeof d.text !== 'string' || e.origin === location.origin) return;
+            let host = ''; try { host = new URL(e.origin).hostname; } catch (err) {}
+            if (!/fds|webresult/i.test(host)) { pont.err = `Message ignoré : il ne vient pas de webresults (${host || 'origine inconnue'}).`; renderPont(); return; }
+            pontReceive(d.text, host);
+        });
+        if (window.opener) { try { window.opener.postMessage({ type: 'asat-hello' }, '*'); } catch (e) {} }
+        function renderPont() {
+            const el = id => document.getElementById(id);
+            if (!el('pontSection')) return;
+            const link = el('pontLink'); if (!link.dataset.set) { link.href = pontBookmarklet(); link.dataset.set = '1'; }
+            const ev = pont.evId ? db.events[pont.evId] : null;
+            const active = !!pont.at;
+            el('pontEvent').textContent = ev ? (ev.meta.name || 'Événement sans nom') : 'celui affiché au premier envoi';
+            el('pontLast').textContent = pont.at ? `${hhmm(pont.at)}:${String(new Date(pont.at).getSeconds()).padStart(2, '0')} · ${pont.n} import(s)` : '—';
+            el('pontSrc').textContent = pont.src || '—';
+            el('pontErr').textContent = pont.err;
+            const st = el('pontState');
+            st.textContent = pont.paused ? 'En pause' : pont.err && active ? 'À vérifier' : active ? 'Actif' : 'Inactif';
+            st.className = 'text-xs font-bold px-3 py-1 rounded-full ' + (pont.paused || (pont.err && active) ? 'bg-amber-500/20 text-amber-200' : active ? 'bg-emerald-500/20 text-emerald-200' : 'bg-slate-700 text-slate-300');
+        }
+        // Plusieurs onglets ASAT Chrono ouverts : chacun relit les données enregistrées par l'autre
+        window.addEventListener('storage', e => {
+            if (e.key !== STORE_KEY || !e.newValue) return;
+            try {
+                const o = JSON.parse(e.newValue);
+                if (!o || !o.events) return;
+                const keep = state.id, events = {};
+                for (const id of Object.keys(o.events)) { const ev = normalizeEvent(o.events[id]); events[ev.id] = ev; }
+                db.events = events;
+                if (o.settings && o.settings.champMode) db.settings.champMode = o.settings.champMode === 'licensed' ? 'licensed' : 'real';
+                state = db.events[keep] || db.events[o.currentId] || sortedEvents()[0];
+                renderAll();
+            } catch (err) {}
+        });
 
         // ===================== Lancement =====================
         save();
