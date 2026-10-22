@@ -290,7 +290,7 @@
                     <span id="liveNameHint" class="text-sm text-amber-300"></span>
                     <span class="text-sm text-slate-400">Un code d'épreuve est créé : les commissaires le saisissent dans leur page, puis vous acceptez leur téléphone ci-dessous.</span>
                     <div class="w-full flex flex-wrap items-center gap-2 text-sm">
-                        <span class="text-slate-400">Second appareil de la cellule (iPad, autre ordinateur) : rejoindre la liaison déjà ouverte</span>
+                        <span class="text-slate-400">Second appareil de la cellule (iPad, autre ordinateur) : rejoindre la liaison déjà ouverte et partager l'événement</span>
                         <input id="liveJoinCode" placeholder="Code de l'épreuve" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 uppercase font-mono w-44">
                         <button type="button" onclick="liveUseCode()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold px-3 py-1 rounded-lg">Rejoindre</button>
                         <span id="liveJoinMsg" class="text-rose-300"></span>
@@ -307,6 +307,7 @@
                         <div><span class="text-slate-400">Manche annoncée aux postes :</span> <b id="liveHeat" class="text-amber-300"></b> <span class="text-xs text-slate-500">(suit la clôture des manches)</span></div>
                         <div><span class="text-slate-400">Liste des pilotes :</span> <span id="liveListInfo" class="text-slate-200"></span> <button type="button" onclick="livePublishList(true)" class="text-xs text-sky-300 underline hover:text-white">republier</button></div>
                         <div><span class="text-slate-400">Reçu en direct :</span> <span id="liveRecv" class="text-slate-200">—</span></div>
+                        <div><span class="text-slate-400">Appareils de la cellule :</span> <span id="liveSync" class="text-slate-200">—</span></div>
                         <div id="liveErr" class="text-rose-300 text-xs"></div>
                     </div>
                     <div class="bg-slate-900/60 rounded-xl p-4 border border-slate-700">
@@ -726,6 +727,7 @@
             db.events[state.id] = state;
             db.currentId = state.id;
             try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); } catch (e) {}
+            if (typeof syncSchedule === 'function') syncSchedule();
         }
         function sortedEvents() {
             return Object.values(db.events).sort((a, b) => (b.meta.date || '').localeCompare(a.meta.date || '') || (a.meta.name || '').localeCompare(b.meta.name || ''));
@@ -2328,12 +2330,14 @@
             const code = window.FB && fbUser && view === 'event' ? (state.liveCode || null) : null;
             if (code === liveSubCode) return;
             liveSubs.forEach(u => { try { u(); } catch (e) {} });
-            liveSubs = []; liveDevices = []; liveSubCode = code; liveListSig = ''; liveErrMsg = ''; liveCount = { infr: 0, rep: 0 }; liveFirst = {};
+            liveSubs = []; liveDevices = []; liveSubCode = code; sync.code = null; liveListSig = ''; liveErrMsg = ''; liveCount = { infr: 0, rep: 0 }; liveFirst = {};
             if (!code) return;
             const { fs, doc, collection, onSnapshot } = window.FB;
             liveSubs.push(onSnapshot(collection(fs, 'events', code, 'devices'), snap => { liveErrMsg = ''; liveDevices = snap.docs.map(d => ({ id: d.id, ...d.data() })); renderLive(); }, liveError));
             liveSubs.push(onSnapshot(collection(fs, 'events', code, 'infr'), snap => liveIncoming(code, snap.docs.map(d => d.data()), false), liveError));
             liveSubs.push(onSnapshot(collection(fs, 'events', code, 'reports'), snap => liveIncoming(code, snap.docs.map(d => d.data()), true), liveError));
+            sync.code = code; sync.sent = {}; sync.remote = {}; sync.ready = false; sync.peers = {};
+            liveSubs.push(onSnapshot(doc(fs, 'events', code, 'sync', 'state'), snap => syncIncoming(code, snap), e => { sync.err = 'Synchronisation refusée : mettez à jour les règles de sécurité (bloc « sync »).'; liveError(e); }));
         }
         function liveIncoming(code, docs, isRep) {
             if (state.liveCode !== code) return;
@@ -2372,6 +2376,7 @@
             try {
                 const ev = await window.FB.getDoc(window.FB.doc(window.FB.fs, 'events', code));
                 if (!ev.exists()) { m.textContent = 'Code inconnu.'; return; }
+                if (state.drivers.length && !confirm(`L'événement affiché sur cet appareil (${state.meta.name || 'sans nom'}, ${state.drivers.length} pilote(s)) va être remplacé par celui de la liaison ${code}. Continuer ?\n(Conseil : créez d'abord un nouvel événement vide sur cet appareil.)`)) return;
                 state.liveCode = code; state.liveFollower = true; save(); liveResub(); renderAll();
             } catch (e) { m.textContent = 'Impossible de vérifier le code (réseau ?).'; }
         }
@@ -2443,7 +2448,9 @@
             el('liveHeat').textContent = state.liveFollower ? 'gérée par l\'appareil qui a ouvert la liaison' : next < nTot() ? slotLong(next) : 'course terminée';
             el('liveListInfo').textContent = `${state.drivers.length} pilote(s)` + (state.liveListAt ? ` · publiée à ${hhmm(state.liveListAt)}` : '');
             el('liveRecv').textContent = `${liveCount.infr} infraction(s) · ${liveCount.rep} relevé(s)`;
-            el('liveErr').textContent = liveErrMsg;
+            el('liveErr').textContent = sync.err || liveErrMsg;
+            const peers = Object.values(sync.peers);
+            el('liveSync').textContent = `${deviceName} (cet appareil)` + (peers.length ? ' + ' + [...new Set(peers)].join(', ') : '') + (sync.at ? ` · synchronisé à ${hhmm(sync.at)}:${String(new Date(sync.at).getSeconds()).padStart(2, '0')}` : ' · en attente');
             const lbl = { pending: ['⏳ en attente', 'text-amber-300'], ok: ['✔ accepté', 'text-emerald-300'], refused: ['✕ refusé', 'text-rose-300'] };
             const devs = [...liveDevices].sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || String(a.poste).localeCompare(String(b.poste)));
             el('liveDevices').innerHTML = devs.length ? devs.map(d => {
@@ -2453,6 +2460,74 @@
                     <span><b>Poste ${esc(d.poste || '?')}</b> · ${esc(d.who || 'sans nom')} <span class="${c} text-xs font-semibold ml-1">${t}</span></span>
                     <span class="space-x-1">${d.status !== 'ok' ? btn('Accepter', 'ok', 'bg-emerald-600 hover:bg-emerald-500 text-white') : ''}${d.status !== 'refused' ? btn(d.status === 'ok' ? 'Retirer' : 'Refuser', 'refused', 'bg-rose-500/20 hover:bg-rose-600 text-rose-200 hover:text-white') : ''}</span></div>`;
             }).join('') : '<div class="text-slate-500">Aucun téléphone pour le moment. Chaque commissaire saisit le code dans sa page puis touche « Rejoindre ».</div>';
+        }
+
+        // ===================== Synchronisation de l'événement entre appareils de la cellule =====================
+        // Chaque rubrique de l'événement (pilotes, passages, pénalités…) est rangée dans events/{code}/sync/state ;
+        // la dernière modification d'une rubrique l'emporte, ce qui permet à l'iPad et au PC de travailler ensemble.
+        const SYNC_SKIP = new Set(['id', 'version', 'liveCode', 'liveFollower', 'vizSel', 'liveListAt']);
+        const sync = { code: null, sent: {}, remote: {}, ready: false, timer: null, applying: false, at: null, err: '', peers: {} };
+        let deviceId = '';
+        try { deviceId = localStorage.getItem('asat_device_id') || ''; if (!deviceId) { deviceId = 'dev' + Math.random().toString(36).slice(2, 10); localStorage.setItem('asat_device_id', deviceId); } } catch (e) { deviceId = 'dev' + Math.random().toString(36).slice(2, 10); }
+        const deviceName = /iPad|iPhone|Macintosh.*Mobile/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform)) ? 'iPad' : /Windows/.test(navigator.userAgent) ? 'PC Windows' : 'ordinateur';
+        function syncKeys() { return Object.keys(state).filter(k => !SYNC_SKIP.has(k)); }
+        function syncIncoming(code, snap) {
+            if (code !== sync.code || state.liveCode !== code) return;
+            const d = snap.exists() ? (snap.data() || {}) : {};
+            const f = d.f || {}, by = d.by || {}, names = d.names || {};
+            let changed = false;
+            sync.applying = true;
+            try {
+                for (const k of Object.keys(f)) {
+                    if (SYNC_SKIP.has(k) || typeof f[k] !== 'string') continue;
+                    if (by[k] && by[k] !== deviceId) sync.peers[by[k]] = names[by[k]] || 'autre appareil';
+                    if (sync.remote[k] === f[k]) continue;
+                    sync.remote[k] = f[k];
+                    const local = JSON.stringify(state[k]);
+                    if (local === f[k]) { sync.sent[k] = f[k]; continue; }
+                    if (by[k] === deviceId && sync.ready) continue;          // notre propre envoi, déjà dépassé localement
+                    if (by[k] === deviceId && !sync.ready) continue;         // modifié ici hors ligne : on le renverra
+                    let val; try { val = JSON.parse(f[k]); } catch (e) { continue; }
+                    const keepId = state.id, keep = { liveCode: state.liveCode, liveFollower: state.liveFollower, vizSel: state.vizSel, liveListAt: state.liveListAt };
+                    const next = normalizeEvent({ ...state, [k]: val });
+                    next.id = keepId; Object.assign(next, keep);
+                    for (const kk of Object.keys(keep)) if (keep[kk] === undefined) delete next[kk];
+                    state = next; db.events[state.id] = state;
+                    sync.sent[k] = JSON.stringify(state[k]);
+                    changed = true;
+                }
+                sync.ready = true; sync.at = new Date().toISOString(); sync.err = '';
+                if (changed) {
+                    try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); } catch (e) {}
+                    document.getElementById('raceNameInput').value = state.meta.name;
+                    document.getElementById('raceDateInput').value = state.meta.date;
+                }
+            } finally { sync.applying = false; }
+            if (changed) renderAll(); else renderLive();
+            syncSchedule();
+        }
+        function syncSchedule() {
+            if (sync.applying || !sync.code || !sync.ready || state.liveCode !== sync.code) return;
+            clearTimeout(sync.timer); sync.timer = setTimeout(syncPush, 700);
+        }
+        function syncPush() {
+            if (!window.FB || !sync.code || state.liveCode !== sync.code || !fbUser) return;
+            const patch = {}, now = new Date().toISOString();
+            for (const k of syncKeys()) {
+                const j = JSON.stringify(state[k] === undefined ? null : state[k]);
+                if (j === sync.sent[k] || j === sync.remote[k]) { sync.sent[k] = j; continue; }
+                patch[k] = j;
+            }
+            const keys = Object.keys(patch); if (!keys.length) return;
+            const size = keys.reduce((a, k) => a + patch[k].length, 0);
+            if (size > 900000) { sync.err = 'Événement trop volumineux pour la synchronisation.'; renderLive(); return; }
+            const body = { f: {}, by: {}, at: {}, names: { [deviceId]: deviceName } };
+            for (const k of keys) { body.f[k] = patch[k]; body.by[k] = deviceId; body.at[k] = now; }
+            const { fs, doc, setDoc } = window.FB;
+            for (const k of keys) sync.sent[k] = patch[k];
+            setDoc(doc(fs, 'events', sync.code, 'sync', 'state'), body, { merge: true })
+                .then(() => { sync.at = new Date().toISOString(); sync.err = ''; renderLive(); })
+                .catch(e => { for (const k of keys) delete sync.sent[k]; sync.err = e && e.code === 'permission-denied' ? 'Synchronisation refusée : mettez à jour les règles de sécurité (bloc « sync »).' : 'Synchronisation en attente de réseau.'; renderLive(); });
         }
 
         // ===================== Import du fichier FDS (appli FDS TBox Chrono) =====================
@@ -2700,7 +2775,7 @@
             messagingSenderId: "29211548916",
             appId: "1:29211548916:web:656143d60f84710159d2a1"
         };
-        if (location.protocol === 'https:' || location.hostname === 'localhost') {
+        if (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
             const app = initializeApp(firebaseConfig);
             const auth = getAuth(app);
             let fs;
