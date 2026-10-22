@@ -40,6 +40,11 @@
         .tv sup { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 11px; font-weight: 800; color:#fbbf24; }
         .tv sup.ep { color:#fda4af; } .tv sup.w { color:#f59e0b; }
         .tnote { font-size: 13px; font-weight: 600; }
+        .tv.runn { color:#fbbf24; border: 1px solid rgba(251,191,36,.55); background: rgba(251,191,36,.08); cursor: default; min-width: 74px; justify-content: center; }
+        .tv.runn .dots i { font-style: normal; font-weight: 900; animation: runblink 1.2s infinite; }
+        .tv.runn .dots i:nth-child(2) { animation-delay: .2s; } .tv.runn .dots i:nth-child(3) { animation-delay: .4s; }
+        @keyframes runblink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .tv.runn .dots i { animation: none; } }
         .tv.pend { color:#64748b; border: 1px dashed rgba(148,163,184,.45); font-weight: 600; }
         .tv.pend sup { font-size: 13px; }
         .evtab { padding: 9px 18px; border-radius: 12px; font-weight: 700; font-size: 15px; border: 1px solid #334155; background:#1e293b; color:#94a3b8; }
@@ -824,11 +829,14 @@
         // Renvoie pour un pilote : slots[0..4] (essai + manches), passages écartés, excédentaires, suspects
         function derive(driver) { return applyInfractions(driver, deriveBase(driver)); }
         // Passages issus du fichier FDS : chaque passage porte sa session (= manche), déduite des heures de départ
+        function isRunningMark(f) { return /^\s*(\.{2,}|…|)\s*$/.test(String(f || '')); }
         function fileSlot(key, p) { const o = state.slotOv && state.slotOv[key]; return Number.isInteger(o) ? o : p.slot; }
         function deriveFromFile(bib, list, best, res) {
             const byStart = list.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0) || a.run - b.run);
+            const lastRun = list.reduce((m, p) => Math.max(m, p.run), 0);
             for (const p of byStart) {
                 const key = pkey(bib, p.run);
+                if (p.status !== 'time' && p.status !== 'dnf' && p.run === lastRun && p.ts && !p.tf) { res.running = { p, slot: fileSlot(key, p) }; continue; }
                 if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
                 if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
                 const dec = state.decisions[key];
@@ -882,9 +890,12 @@
             const skipGaps = (lo = 0) => {
                 while (idx < lo || gaps.has(idx)) { if (idx < nTot()) res.slots[idx] = gaps.has(idx) ? gapEntry(idx) : autoGap(idx); idx++; }
             };
+            const lastRun = list.reduce((m, p) => Math.max(m, p.run), 0);
+            let runningP = null;
             for (const p of list) {
                 const key = pkey(bib, p.run);
                 if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
+                if (p.status !== 'time' && p.run === lastRun && isRunningMark(p.finish)) { runningP = p; continue; }   // parti, pas encore arrivé
                 if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
                 const t = parseTime(p.finish);
                 const dec = state.decisions[key];
@@ -902,8 +913,13 @@
                 if (idx < nTot()) res.slots[idx] = entry; else res.extra.push(entry);
                 idx++; real++;
             }
+            if (runningP) {
+                let j = Math.max(idx, minSlot(runningP.run));
+                while (gaps.has(j)) j++;
+                if (j < nTot()) res.running = { p: runningP, slot: j };
+            }
             for (const g of gaps) if (g >= idx && g < nTot()) res.slots[g] = gapEntry(g);
-            for (let j = idx; j < Math.min(cuts.length, nTot()); j++) if (!res.slots[j] && cuts[j] !== null) res.slots[j] = autoGap(j);
+            for (let j = idx; j < Math.min(cuts.length, nTot()); j++) if (!res.slots[j] && cuts[j] !== null && !(res.running && res.running.slot === j)) res.slots[j] = autoGap(j);
             res.validCount = real;
             return res;
         }
@@ -1702,6 +1718,7 @@
             const td = inner => `<td class="px-2 text-center ${colCls}">${inner}</td>`;
             const bib = esc(d.number);
             const pd = x.pending && x.pending[i];
+            if (x.running && x.running.slot === i && (!s || s.auto)) return td(`<span class="tv runn" title="Pilote parti, en attente de son arrivée${x.running.p.ts ? ' (départ ' + hhmm(new Date(x.running.p.ts).toISOString()) + ')' : ''}"><span class="dots"><i>.</i><i>.</i><i>.</i></span>${pd ? pendSup(pd) : ''}</span>`);
             if (d.source !== 'fds' && !s && !pd) return td(`<button class="tv pend" style="border-color:transparent" onclick="openCellMenu(event,'${bib}',${i})" title="En attente du collage webresults">—</button>`);
             if (pd && (!s || s.auto)) return td(`<button class="tv pend" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(pendTitle(pd))}">${closed ? '<span class="tnote text-rose-400">Pas de temps</span>' : '—'}${pendSup(pd)}</button>`);
             if (!s) return td(closed ? '<span class="tnote text-rose-400">Pas de temps</span>' : '<span class="text-slate-600">—</span>');
