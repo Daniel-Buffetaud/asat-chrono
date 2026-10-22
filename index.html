@@ -97,6 +97,10 @@
                 <button id="btnPaste" onclick="openPasteModal()" class="bg-amber-500 hover:bg-amber-400 text-slate-950 px-3 py-2 rounded-xl font-bold transition shadow-md text-xs sm:text-sm">
                     📋 Coller webresults
                 </button>
+                <label id="btnFds" class="bg-teal-600 hover:bg-teal-500 text-white px-3 py-2 rounded-xl font-bold transition shadow-md text-xs sm:text-sm cursor-pointer flex items-center" title="Fichier .fds exporté par l'appli FDS TBox Chrono (ou le .csv des résultats)">
+                    📥 Importer fichier FDS
+                    <input type="file" id="fdsFile" onchange="importFdsFile(event)" class="hidden">
+                </label>
                 <button id="btnPastePen" onclick="openPenModal()" class="bg-orange-600 hover:bg-orange-500 text-white px-3 py-2 rounded-xl font-bold transition shadow-md text-xs sm:text-sm">
                     🚩 Coller pénalités
                 </button>
@@ -285,6 +289,12 @@
                     <button type="button" onclick="liveOpen()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold py-2.5 px-4 rounded-xl">📡 Ouvrir la liaison pour cet événement</button>
                     <span id="liveNameHint" class="text-sm text-amber-300"></span>
                     <span class="text-sm text-slate-400">Un code d'épreuve est créé : les commissaires le saisissent dans leur page, puis vous acceptez leur téléphone ci-dessous.</span>
+                    <div class="w-full flex flex-wrap items-center gap-2 text-sm">
+                        <span class="text-slate-400">Second appareil de la cellule (iPad, autre ordinateur) : rejoindre la liaison déjà ouverte</span>
+                        <input id="liveJoinCode" placeholder="Code de l'épreuve" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 uppercase font-mono w-44">
+                        <button type="button" onclick="liveUseCode()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold px-3 py-1 rounded-lg">Rejoindre</button>
+                        <span id="liveJoinMsg" class="text-rose-300"></span>
+                    </div>
                 </div>
                 <div id="liveBox" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
                     <div class="bg-slate-900/60 rounded-xl p-4 border border-slate-700">
@@ -666,7 +676,8 @@
             s.drivers = list.map(normDriver);
             if (obj && obj.passages && typeof obj.passages === 'object') {
                 for (const bib of Object.keys(obj.passages)) {
-                    if (Array.isArray(obj.passages[bib])) s.passages[bib] = obj.passages[bib].filter(p => p && Number.isFinite(+p.run)).map(p => ({ run: +p.run, inter: String(p.inter || ''), finish: String(p.finish || ''), status: ['time', 'dnf', 'nofinish'].includes(p.status) ? p.status : 'nofinish' }));
+                    if (Array.isArray(obj.passages[bib])) s.passages[bib] = obj.passages[bib].filter(p => p && Number.isFinite(+p.run)).map(p => ({ run: +p.run, inter: String(p.inter || ''), finish: String(p.finish || ''), status: ['time', 'dnf', 'nofinish'].includes(p.status) ? p.status : 'nofinish',
+                        ...(Number.isInteger(p.slot) ? { slot: p.slot } : {}), ...(Number.isFinite(p.ts) ? { ts: p.ts } : {}), ...(Number.isFinite(p.tf) ? { tf: p.tf } : {}) }));
                 }
             }
             if (obj && obj.decisions && typeof obj.decisions === 'object') s.decisions = { ...obj.decisions };
@@ -682,6 +693,9 @@
             if (obj && obj.closeAt && typeof obj.closeAt === 'object') s.closeAt = { ...obj.closeAt };
             if (obj && obj.reports && typeof obj.reports === 'object') s.reports = { ...obj.reports };
             if (obj && obj.vizSel && typeof obj.vizSel === 'object') s.vizSel = { ...obj.vizSel };
+            if (obj && obj.slotOv && typeof obj.slotOv === 'object') s.slotOv = { ...obj.slotOv };
+            if (obj && obj.fdsImport && typeof obj.fdsImport === 'object') s.fdsImport = { ...obj.fdsImport };
+            if (obj && obj.liveFollower) s.liveFollower = true;
             if (obj && typeof obj.liveCode === 'string' && /^[A-Z0-9-]{4,24}$/.test(obj.liveCode)) s.liveCode = obj.liveCode;
             if (obj && obj.infr && typeof obj.infr === 'object')
                 for (const k of Object.keys(obj.infr)) { const v = obj.infr[k]; if (v && v.id && PEN_TYPES[v.type]) s.infr[k] = { ...v, ov: { ...(v.ov || {}) } }; }
@@ -807,6 +821,31 @@
         // ===================== Interprétation des passages =====================
         // Renvoie pour un pilote : slots[0..4] (essai + manches), passages écartés, excédentaires, suspects
         function derive(driver) { return applyInfractions(driver, deriveBase(driver)); }
+        // Passages issus du fichier FDS : chaque passage porte sa session (= manche), déduite des heures de départ
+        function fileSlot(key, p) { const o = state.slotOv && state.slotOv[key]; return Number.isInteger(o) ? o : p.slot; }
+        function deriveFromFile(bib, list, best, res) {
+            const byStart = list.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0) || a.run - b.run);
+            for (const p of byStart) {
+                const key = pkey(bib, p.run);
+                if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
+                if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
+                const dec = state.decisions[key];
+                if (dec === 'excluded') { res.excluded.push({ p, key, reason: 'écarté', manual: true }); continue; }
+                const t = parseTime(p.finish), slot = fileSlot(key, p);
+                const reasons = [];
+                if (Number.isFinite(best) && t > best * SEUIL_ANORMAL) reasons.push('plus de 25 % au-dessus de son meilleur temps');
+                const entry = { p, key, t, reasons, susp: reasons.length > 0 && dec !== 'valid', validated: dec === 'valid', pen: Number(state.pens[key]) || 0, slot };
+                if (slot >= nTot()) { entry.reasons.push(`session ${slot + 1} au-delà du format de l'épreuve`); res.extra.push(entry); continue; }
+                const prev = res.slots[slot];
+                if (prev) {   // deux passages dans la même session : le dernier compte, l'autre est écarté (passage refait)
+                    res.excluded.push({ p: prev.p, key: prev.key, reason: `refait dans la même manche (${fmt(prev.t)})` });
+                    res.suspicious = res.suspicious.filter(x => x !== prev); res.validCount--;
+                }
+                if (entry.susp) res.suspicious.push(entry);
+                res.slots[slot] = entry; res.validCount++;
+            }
+            return res;
+        }
         function deriveBase(driver) {
             const res = { slots: Array(nTot()).fill(null), excluded: [], extra: [], suspicious: [], noFinish: [], validCount: 0 };
             if (driver.source !== 'fds') {
@@ -820,6 +859,7 @@
             const list = (state.passages[bib] || []).slice().sort((a, b) => a.run - b.run);
             let best = Infinity;
             for (const p of list) if (p.status === 'time' && state.decisions[pkey(bib, p.run)] !== 'excluded') best = Math.min(best, parseTime(p.finish));
+            if (list.length && list.every(p => Number.isInteger(p.slot))) return deriveFromFile(bib, list, best, res);
             const gaps = new Set((state.gaps && state.gaps[bib]) || []);
             const gapEntry = i => ({ gap: true, slot: i });
             // Repères de clôture : cuts[j] = dernier n° de passage FDS du pilote appartenant aux manches 0..j (fixé à la clôture de j)
@@ -914,6 +954,14 @@
                 if (slot > 0 && ca[slot - 1] && at < Date.parse(ca[slot - 1]) - 2 * 60000) out.warn.push(`saisie à ${hhmm(inf.at)}, avant la clôture de ${slotLong(slot - 1)} (${hhmm(ca[slot - 1])})`);
                 if (!inf.manual && state.meta.date && localDate(inf.at) !== state.meta.date) out.warn.push(`saisie le ${localDate(inf.at).split('-').reverse().join('/')}, autre jour que l'épreuve`);
             }
+            // concordance avec l'heure du passage enregistrée par les cellules (fichier FDS)
+            const pa = passageAt(inf.bib, inf.at);
+            if (pa && Number.isInteger(pa.slot)) {
+                const real = fileSlot(pkey(inf.bib, pa.run), pa);
+                if (real !== slot) { out.fix = slotHeat(real); out.fixLabel = slotLong(real); }
+                if (real !== slot) out.warn.push(`d'après les cellules, le n° ${inf.bib} était en piste en ${slotLong(real)} à ${hhmm(inf.at)} (départ ${hhmm(new Date(pa.ts).toISOString())})`);
+                else out.cell = `✓ heure cohérente avec le passage (départ ${hhmm(new Date(pa.ts).toISOString())})`;
+            } else if ((state.passages[inf.bib] || []).some(p => Number.isFinite(p.ts))) out.warn.push(`aucun passage du n° ${inf.bib} enregistré par les cellules à ${hhmm(inf.at)}`);
             const twin = activeInfs().map(effInf).find(o => o.id !== inf.id && o.bib === inf.bib && o.heat === inf.heat && o.type === inf.type && o.poste === inf.poste && Math.abs(Date.parse(o.at) - at) < 30000);
             if (twin) out.warn.push('doublon possible (même poste, moins de 30 s d\'écart)');
             return out;
@@ -990,6 +1038,7 @@
         function removeManualInf(id) { if (state.infr && state.infr[id] && state.infr[id].manual) { delete state.infr[id]; save(); renderAll(); } }
         function cancelInf(id) { const i = state.infr[id]; if (!i) return; i.cancelled = true; i.cancelledBy = 'chrono'; save(); renderAll(); }
         function restoreInf(id) { const i = state.infr[id]; if (!i) return; i.cancelled = false; i.cancelledBy = ''; save(); renderAll(); }
+        function fixInfHeat(id, heat) { const i = state.infr[id]; if (!i) return; i.ov = { ...(i.ov || {}) }; if (heat === i.heat) delete i.ov.heat; else i.ov.heat = heat; save(); renderAll(); }
         function editInf(id) { penEditing = id; renderPenalties(); }
         function saveInf(id) {
             const i = state.infr[id]; if (!i) return;
@@ -1040,7 +1089,7 @@
                     <td class="p-2 font-mono font-bold text-amber-400">#${esc(inf.bib)}</td>
                     <td class="p-2">${esc(d ? d.name : '—')}</td>
                     <td class="p-2 ${typeCls} font-semibold">${pt.short}${pt.sec ? ' +' + pt.sec + ' s' : ''}${modified ? ' <span class="text-[10px] bg-sky-500/20 text-sky-300 px-1 rounded no-underline" title="Modifiée : original ' + heatLabel(raw.heat) + ' · n° ' + esc(raw.bib) + ' · ' + PEN_TYPES[raw.type].short + '">modifiée</span>' : ''}</td>
-                    <td class="p-2 text-xs ${e.ok ? 'text-emerald-300' : 'text-slate-400'}">${e.ok ? '✔ ' : ''}${esc(e.text)}${e.warn.map(w => '<div class="text-amber-300">⚠ ' + esc(w) + '</div>').join('')}</td>
+                    <td class="p-2 text-xs ${e.ok ? 'text-emerald-300' : 'text-slate-400'}">${e.ok ? '✔ ' : ''}${esc(e.text)}${e.cell ? '<div class="text-sky-300">' + esc(e.cell) + '</div>' : ''}${e.fix && !raw.cancelled ? `<button onclick="fixInfHeat('${raw.id}','${e.fix}')" class="mt-1 bg-sky-600/30 hover:bg-sky-600 text-sky-200 hover:text-white px-2 py-0.5 rounded text-[11px] font-bold">Corriger : passer en ${esc(e.fixLabel)}</button>` : ''}${e.warn.map(w => '<div class="text-amber-300">⚠ ' + esc(w) + '</div>').join('')}</td>
                     <td class="p-2 whitespace-nowrap no-print">${raw.cancelled
                         ? `<button onclick="restoreInf('${raw.id}')" class="bg-sky-600/30 hover:bg-sky-600 text-sky-200 hover:text-white px-2 py-1 rounded text-xs font-bold no-underline">Rétablir</button>`
                         : `<button onclick="editInf('${raw.id}')" class="bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 px-2 py-1 rounded text-xs font-bold">Modifier</button> <button onclick="cancelInf('${raw.id}')" class="bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white px-2 py-1 rounded text-xs font-bold">Annuler</button>`}</td></tr>`;
@@ -1143,6 +1192,7 @@
         }
 
         function applyWebresults(parsed) {
+            if (state.fdsImport) return { ok: false, msg: `Cet événement est alimenté par le fichier FDS (import du ${new Date(state.fdsImport.at).toLocaleString('fr-FR')}) : les temps webresults ne sont pas pris en compte, pour ne pas mélanger les deux sources. Réimportez le fichier FDS pour mettre à jour.` };
             const rows = parsed.rows;
             if (rows.length === 0) return { ok: false, msg: "Aucune ligne de résultat reconnue. Vérifiez que vous avez bien copié la page webresults (Ctrl + A puis Ctrl + C)." };
             const byBib = {};
@@ -1702,6 +1752,12 @@
                     : b(`↺ Annuler l'infraction du poste ${esc(inf.poste)} (${PEN_TYPES[inf.type].short})`, `cancelInf('${inf.id}')`);
                 h += '<div class="sep"></div>';
                 if (mt) h += b('✎ Modifier le temps', `manualTimePrompt('${esc(d.number)}',${i})`) + b('✕ Effacer le temps', `updateManualTime('${did}',${i},'')`);
+                else if (s.p && Number.isInteger(s.p.slot)) {
+                    if (!s.susp) h += b('✕ Écarter ce temps (passage refait)', `setDecision('${k}','excluded')`);
+                    if (s.p.ts) h = h.replace('</div>', `<br><span class="text-sky-300">Cellules : départ ${hhmm(new Date(s.p.ts).toISOString())}:${String(new Date(s.p.ts).getSeconds()).padStart(2, '0')}${s.p.tf ? ' · arrivée ' + hhmm(new Date(s.p.tf).toISOString()) + ':' + String(new Date(s.p.tf).getSeconds()).padStart(2, '0') : ''}</span></div>`);
+                    if (i < nTot() - 1) h += b('→ Placer dans la manche suivante', `moveFileSlot('${esc(d.number)}',${s.p.run},1)`);
+                    if (i > 0) h += b('← Placer dans la manche précédente', `moveFileSlot('${esc(d.number)}',${s.p.run},-1)`);
+                }
                 else {
                     if (!s.susp) h += b('✕ Écarter ce temps (passage refait)', `setDecision('${k}','excluded')`);
                     h += b('→ Décaler vers la manche suivante', `addGap('${esc(d.number)}',${i})`);
@@ -2306,12 +2362,22 @@
                 let code = liveCodeFromName(), n = 0;
                 while (n++ < 5 && (await getDoc(doc(fs, 'events', code))).exists()) code = liveCodeFromName();
                 await setDoc(doc(fs, 'events', code), { name: raceName(), date: state.meta.date || '', owner: fbUser.uid, createdAt: new Date().toISOString() });
-                state.liveCode = code; save(); liveResub(); renderAll();
+                state.liveCode = code; delete state.liveFollower; save(); liveResub(); renderAll();
             } catch (e) { liveError(e); }
+        }
+        async function liveUseCode() {
+            const code = String(document.getElementById('liveJoinCode').value || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
+            const m = document.getElementById('liveJoinMsg'); m.textContent = '';
+            if (!code || !window.FB || !fbUser) return;
+            try {
+                const ev = await window.FB.getDoc(window.FB.doc(window.FB.fs, 'events', code));
+                if (!ev.exists()) { m.textContent = 'Code inconnu.'; return; }
+                state.liveCode = code; state.liveFollower = true; save(); liveResub(); renderAll();
+            } catch (e) { m.textContent = 'Impossible de vérifier le code (réseau ?).'; }
         }
         function liveNewCode() {
             if (!confirm('Créer un nouveau code ? Les téléphones devront le saisir et être acceptés à nouveau. Les pénalités déjà reçues restent dans l\'événement.')) return;
-            delete state.liveCode; save(); liveOpen();
+            delete state.liveCode; delete state.liveFollower; save(); liveOpen();
         }
         function liveSetDevice(id, status) {
             if (!window.FB || !liveSubCode) return;
@@ -2343,7 +2409,7 @@
         }
         function liveAfterRender() {
             liveResub();
-            if (liveSubCode) { clearTimeout(liveListTimer); liveListTimer = setTimeout(() => livePublishList(false), 1200); liveAnnounce(); }
+            if (liveSubCode && !state.liveFollower) { clearTimeout(liveListTimer); liveListTimer = setTimeout(() => livePublishList(false), 1200); liveAnnounce(); }
             renderLive();
         }
         async function liveSignIn(e) {
@@ -2374,7 +2440,7 @@
             if (!code) return;
             el('liveCode').textContent = code;
             const next = state.closedThrough + 1;
-            el('liveHeat').textContent = next < nTot() ? slotLong(next) : 'course terminée';
+            el('liveHeat').textContent = state.liveFollower ? 'gérée par l\'appareil qui a ouvert la liaison' : next < nTot() ? slotLong(next) : 'course terminée';
             el('liveListInfo').textContent = `${state.drivers.length} pilote(s)` + (state.liveListAt ? ` · publiée à ${hhmm(state.liveListAt)}` : '');
             el('liveRecv').textContent = `${liveCount.infr} infraction(s) · ${liveCount.rep} relevé(s)`;
             el('liveErr').textContent = liveErrMsg;
@@ -2387,6 +2453,153 @@
                     <span><b>Poste ${esc(d.poste || '?')}</b> · ${esc(d.who || 'sans nom')} <span class="${c} text-xs font-semibold ml-1">${t}</span></span>
                     <span class="space-x-1">${d.status !== 'ok' ? btn('Accepter', 'ok', 'bg-emerald-600 hover:bg-emerald-500 text-white') : ''}${d.status !== 'refused' ? btn(d.status === 'ok' ? 'Retirer' : 'Refuser', 'refused', 'bg-rose-500/20 hover:bg-rose-600 text-rose-200 hover:text-white') : ''}</span></div>`;
             }).join('') : '<div class="text-slate-500">Aucun téléphone pour le moment. Chaque commissaire saisit le code dans sa page puis touche « Rejoindre ».</div>';
+        }
+
+        // ===================== Import du fichier FDS (appli FDS TBox Chrono) =====================
+        // Format .fds (JSON, version 3.1 observée) : heures en 1/10 000 s depuis le 01/01/2001 00:00, heure locale ; timeZone en secondes.
+        const FDS_EPOCH = Date.UTC(2001, 0, 1);
+        function fdsClock(t, tz) { return FDS_EPOCH + (t / 1e4 - tz) * 1000; }   // → instant (ms, UTC)
+        function fdsFmt(sec) { if (!(sec > 0)) return ''; const m = Math.floor(sec / 60), r = sec - 60 * m; return m ? `${m}:${r.toFixed(3).padStart(6, '0')}` : r.toFixed(3); }
+        function parseFdsFile(text) {
+            const d = JSON.parse(text);
+            if (!d || !Array.isArray(d.results) || !Array.isArray(d.racersList) || !Array.isArray(d.timeStamps)) throw new Error('Ce fichier ne ressemble pas à une course FDS (.fds).');
+            const tz = Number(d.raceDetails && d.raceDetails.timeZone) || 0;
+            const ts = new Map(d.timeStamps.map(x => [x.seqN, x]));
+            const racers = new Map(d.racersList.map(r => [r.id, r]));
+            const order = (Array.isArray(d.startList) ? d.startList : []).map(id => racers.get(id)).filter(Boolean).map(r => String(r.bib));
+            const pos = new Map(order.map((b, i) => [b, i]));
+            const runs = [];
+            for (const r of d.results) {
+                const rc = racers.get(r.racerId); if (!rc) continue;
+                const s0 = ts.get(r.sTimeId), f0 = ts.get(r.fTimeId);
+                runs.push({ bib: String(rc.bib), run: Number(r.run) || 0, status: r.status === 5 && r.result > 0 ? 'time' : r.status === 3 ? 'dnf' : 'nofinish',
+                    sec: (Number(r.result) || 0) / 1e4, ts: s0 ? fdsClock(s0.time, tz) : null, tf: f0 ? fdsClock(f0.time, tz) : null });
+            }
+            // Sessions (= manches) : on repart au début de la liste de départ, ou un pilote déjà passé repart, après au moins 4 min d'interruption
+            const timed = runs.filter(x => x.ts).sort((a, b) => a.ts - b.ts);
+            const sessions = []; let cur = null, prev = null;
+            for (const x of timed) {
+                const gap = prev ? (x.ts - prev.ts) / 1000 : Infinity;
+                const back = prev && pos.has(x.bib) && pos.has(prev.bib) && pos.get(x.bib) < pos.get(prev.bib);
+                const again = cur && cur.bibs.has(x.bib);
+                if (!cur || ((back || again) && gap > 240)) { cur = { start: x.ts, end: x.ts, bibs: new Set(), n: 0 }; sessions.push(cur); }
+                x.session = sessions.length - 1; cur.bibs.add(x.bib); cur.end = x.tf || x.ts; cur.n++; prev = x;
+            }
+            // passages sans heure (non partis, abandon avant départ…) : rattachés à la session du passage suivant ou précédent du même pilote
+            for (const x of runs.filter(r => !r.ts)) {
+                const same = runs.filter(r => r.bib === x.bib && r.ts).sort((a, b) => a.run - b.run);
+                const next = same.find(r => r.run > x.run), before = same.reverse().find(r => r.run < x.run);
+                x.session = next ? next.session : before ? before.session + 1 : 0;
+            }
+            const done = !runs.some(x => x.status === 'nofinish' && x.ts && !x.tf);
+            return {
+                name: String((d.raceDetails && d.raceDetails.name) || '').trim(), city: String((d.raceDetails && d.raceDetails.location && d.raceDetails.location.city) || '').trim(),
+                eventDate: String((d.raceDetails && d.raceDetails.eventDate) || ''), savedAt: String((d.raceDetails && d.raceDetails.lastSavedDate) || ''),
+                racers: d.racersList.map(r => ({ bib: String(r.bib), name: String(r.name || '').trim(), team: String(r.team || '').trim(), gender: r.gender === 2 ? 'Femme' : r.gender === 1 ? 'Homme' : '' })),
+                order, runs, sessions: sessions.map(x => ({ start: x.start, end: x.end, n: x.n })), done, version: String(d.version || '')
+            };
+        }
+        // CSV des résultats : pas d'heures de passage, les manches restent réparties dans l'ordre (comme webresults)
+        function parseFdsCsv(text) {
+            const lines = String(text).replace(/\r/g, '').split('\n').filter(l => l.trim());
+            const head = lines.shift().split(';').map(h => h.trim().toLowerCase());
+            const col = n => head.indexOf(n);
+            if (col('bib') < 0 || col('run') < 0 || col('result') < 0) throw new Error('CSV non reconnu : il faut les colonnes Bib, Run et Result.');
+            const runs = [], racers = new Map();
+            for (const l of lines) {
+                const c = l.split(';'), bib = String(c[col('bib')] || '').trim(); if (!bib) continue;
+                const g = String(c[col('gender')] || '').trim();
+                racers.set(bib, { bib, name: String(c[col('competitor')] || '').trim(), team: String(c[col('team')] || '').trim(), gender: g === 'F' ? 'Femme' : g === 'M' ? 'Homme' : '' });
+                const st = String(c[col('status')] || '').trim().toUpperCase(), res = String(c[col('result')] || '').trim();
+                runs.push({ bib, run: Number(c[col('run')]) || 0, status: st === 'CLS' && res ? 'time' : st === 'DNF' || st === 'DSQ' || st === 'DNS' ? 'dnf' : 'nofinish', finish: res, dnfLabel: st });
+            }
+            return { csv: true, racers: [...racers.values()], runs };
+        }
+        function applyFds(f, fileName) {
+            const nameKey = n => rosterKey(n);
+            let created = 0;
+            for (const r of f.racers) {
+                if (!r.bib) continue;
+                let d = state.drivers.find(x => x.number === r.bib);
+                if (!d) {
+                    d = normDriver({ id: 'fds_' + r.bib + '_' + Date.now(), name: r.name, number: r.bib, vehicle: r.team, source: 'fds', needsReview: true }, state.drivers.length);
+                    if (fillFromRegistry(d)) d.needsReview = false;
+                    if (r.gender) d.gender = r.gender;
+                    state.drivers.push(d); created++;
+                } else { d.source = 'fds'; d.planned = false; if (!d.vehicle && r.team) d.vehicle = r.team; }
+                if (r.gender && d.needsReview && !registry.pilots[normKey(d.name)]) d.gender = r.gender;
+            }
+            // ordre de départ officiel
+            if (f.order && f.order.length) f.order.forEach((b, i) => { const d = state.drivers.find(x => x.number === b); if (d) { d.order = i + 1; d.orderAuto = false; } });
+            // passages : remplacent ceux venus de webresults pour chaque pilote du fichier
+            const by = {};
+            for (const x of f.runs) (by[x.bib] = by[x.bib] || []).push(x);
+            for (const b of Object.keys(by)) {
+                state.passages[b] = by[b].sort((a, c) => a.run - c.run).map(x => ({
+                    run: x.run, inter: '', finish: f.csv ? (x.status === 'dnf' ? x.dnfLabel : x.finish) : (x.status === 'time' ? fdsFmt(x.sec) : x.status === 'dnf' ? 'DNF' : ''),
+                    status: x.status, ...(f.csv ? {} : { slot: x.session, ...(x.ts ? { ts: x.ts } : {}), ...(x.tf ? { tf: x.tf } : {}) })
+                }));
+            }
+            if (!f.csv) {
+                state.fdsImport = { at: new Date().toISOString(), file: fileName, sessions: f.sessions, done: f.done, version: f.version };
+                state.cuts = {}; state.gaps = {};
+                // clôture automatique : toutes les sessions terminées (la dernière seulement si la course est finie)
+                state.closedThrough = Math.min(nTot() - 1, f.sessions.length - (f.done ? 1 : 2));
+                state.closeAt = {};
+                f.sessions.forEach((x, i) => { if (i <= state.closedThrough) state.closeAt[i] = new Date(x.end).toISOString(); });
+            }
+            if (!state.meta.name && f.name) state.meta.name = f.name;
+            const m = /^(\d{2})-(\d{2})-(\d{2})/.exec(f.eventDate || '');
+            if (m && (!state.meta.date || state.meta.date === todayISO())) state.meta.date = `20${m[3]}-${m[2]}-${m[1]}`;
+            state.hasInter = false;
+            save();
+            return created;
+        }
+        async function importFdsFile(ev) {
+            const file = ev.target.files && ev.target.files[0]; ev.target.value = '';
+            if (!file) return;
+            if (view !== 'event') { showBanner('Affichez d\'abord l\'événement de la course.', false); return; }
+            try {
+                const text = await file.text();
+                const isCsv = /\.csv$/i.test(file.name) || /^\s*Pos;Bib;/i.test(text);
+                const f = isCsv ? parseFdsCsv(text) : parseFdsFile(text);
+                const nRuns = f.runs.filter(x => x.status === 'time').length;
+                let msg = `Fichier ${isCsv ? 'CSV' : 'FDS'} « ${file.name} »\n${f.racers.length} pilote(s), ${nRuns} temps valable(s).`;
+                if (!isCsv) {
+                    msg += `\n${f.sessions.length} session(s) détectée(s) d'après les heures de départ :\n` + f.sessions.map((x, i) => `  ${slotLong(i) || 'Session ' + (i + 1)} : ${hhmm(new Date(x.start).toISOString())} – ${hhmm(new Date(x.end).toISOString())} (${x.n} départs)`).join('\n');
+                    if (f.sessions.length > nTot()) msg += `\n⚠ Plus de sessions que le format de l'épreuve (${nTot()}) : réglez le nombre d'essais et de manches dans les paramètres.`;
+                    msg += f.done ? '\nCourse terminée : toutes les manches seront clôturées.' : '\nUne session est en cours : elle restera ouverte.';
+                    msg += '\n\nLes temps de ces pilotes remplaceront ceux venus de webresults, et la clôture des manches se fera d\'après le fichier.';
+                } else msg += '\nSans heures de passage : les temps sont répartis dans l\'ordre, comme avec webresults.';
+                if (state.fdsImport && isCsv) { showBanner('Cet événement est déjà alimenté par un fichier FDS : importez plutôt le fichier .fds.', false); return; }
+                if (!confirm(msg + '\n\nImporter dans l\'événement affiché ?')) return;
+                const created = applyFds(f, file.name);
+                showBanner(`${isCsv ? 'CSV' : 'Fichier FDS'} importé : ${f.racers.length} pilote(s)${created ? `, dont ${created} nouveau(x)` : ''}, ${nRuns} temps.` + (isCsv ? '' : ` ${f.sessions.length} session(s).`), true);
+                document.getElementById('raceNameInput').value = state.meta.name;
+                document.getElementById('raceDateInput').value = state.meta.date;
+                renderAll();
+            } catch (e) { showBanner('Import impossible : ' + (e && e.message ? e.message : e), false); }
+        }
+        // Passage FDS (avec heures) correspondant à l'heure d'une saisie de commissaire
+        function passageAt(bib, iso) {
+            const at = Date.parse(iso); if (!Number.isFinite(at)) return null;
+            const list = (state.passages[bib] || []).filter(p => Number.isFinite(p.ts));
+            let best = null;
+            for (const p of list) {
+                const end = Number.isFinite(p.tf) ? p.tf : p.ts + 180000;
+                // la saisie tombe pendant le passage, ou au plus 2 min après l'arrivée (1 min de tolérance avant le départ : horloges des téléphones)
+                const d = at < p.ts - 60000 ? Infinity : at <= end + 120000 ? 0 : at - end;
+                if (d === 0 && (!best || p.ts > best.ts)) best = p;
+            }
+            return best;
+        }
+        function moveFileSlot(bib, run, delta) {
+            const key = pkey(bib, run), p = (state.passages[bib] || []).find(x => x.run === run); if (!p) return;
+            state.slotOv = state.slotOv || {};
+            const n = fileSlot(key, p) + delta;
+            if (n < 0) return;
+            if (n === p.slot) delete state.slotOv[key]; else state.slotOv[key] = n;
+            save(); renderAll();
         }
 
         // ===================== Pont webresults =====================
