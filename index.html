@@ -45,6 +45,7 @@
         .tv.runn .dots i:nth-child(2) { animation-delay: .2s; } .tv.runn .dots i:nth-child(3) { animation-delay: .4s; }
         @keyframes runblink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
         @media (prefers-reduced-motion: reduce) { .tv.runn .dots i { animation: none; } }
+        .tv.dns.dsq { color:#fff; background:#b91c1c; border-color:#b91c1c; }
         .tv.dns { color:#fb7185; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; font-weight: 800; letter-spacing: .06em; }
         .tv.pend { color:#64748b; border: 1px dashed rgba(148,163,184,.45); font-weight: 600; }
         .tv.pend sup { font-size: 13px; }
@@ -836,6 +837,7 @@
         // - sinon : compter ce DNF comme une manche donnerait au pilote plus de manches que celles déjà commencées.
         // (webresults range les DNF à part en bas de liste : leur position ne renseigne pas sur l'ordre.)
         function dnfRedone(bib, p, list, maxSlot) {
+            if (statusLabel(p.finish) === 'DSQ') return false;   // une disqualification n'est jamais « refaite »
             const later = list.filter(q => q.run > p.run && state.decisions[pkey(bib, q.run)] !== 'excluded');
             if (!later.some(q => q.status === 'time' || q.status === 'dnf')) return false;
             const nxt = later[0];
@@ -850,6 +852,8 @@
         // Manche clôturée sans temps : « DNS » par défaut, modifiable en « DNF » par le chrono
         function noTimeLabel(bib, i) { const m = state.marks && state.marks[bib + '|' + i]; return m === 'DNF' ? 'DNF' : 'DNS'; }
         function setMark(bib, i, v) { state.marks = state.marks || {}; const k = bib + '|' + i; if (v === 'DNS') delete state.marks[k]; else state.marks[k] = v; save(); renderAll(); }
+        // Libellé d'un passage sans temps : ELIM (webresults) = DSQ (disqualifié)
+        function statusLabel(f) { const u = String(f || '').trim().toUpperCase(); return /^(ELIM|EL|DSQ|DQ|DISQ)$/.test(u) ? 'DSQ' : /^(ABD|ABS)$/.test(u) ? 'DNF' : (u || 'DNF'); }
         function isRunningMark(f) { return /^\s*(\.{2,}|…|)\s*$/.test(String(f || '')); }
         function fileSlot(key, p) { const o = state.slotOv && state.slotOv[key]; return Number.isInteger(o) ? o : p.slot; }
         function deriveFromFile(bib, list, best, res) {
@@ -859,8 +863,8 @@
             for (const p of byStart) {
                 const key = pkey(bib, p.run);
                 if (p.status !== 'time' && p.status !== 'dnf' && p.run === lastRun && p.ts && !p.tf) { res.running = { p, slot: fileSlot(key, p) }; continue; }
-                if (p.status === 'dnf' && state.decisions[key] !== 'excluded') { const sl = fileSlot(key, p); if (sl < nTot()) dnfs.push({ gap: true, auto: true, dnf: true, label: p.finish.toUpperCase() || 'DNF', p, key, slot: sl }); continue; }
-                if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
+                if (p.status === 'dnf' && state.decisions[key] !== 'excluded') { const sl = fileSlot(key, p); if (sl < nTot()) dnfs.push({ gap: true, auto: true, dnf: true, label: statusLabel(p.finish), p, key, slot: sl }); continue; }
+                if (p.status === 'dnf') { res.excluded.push({ p, key, reason: statusLabel(p.finish) }); continue; }
                 if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
                 const dec = state.decisions[key];
                 if (dec === 'excluded') { res.excluded.push({ p, key, reason: 'écarté', manual: true }); continue; }
@@ -922,10 +926,10 @@
                     // DNF / DNS déclaré par l'opérateur : la manche est courue sans temps,
                     // sauf s'il est suivi d'un nouveau passage du pilote dans la même manche (passage refait), ou si le chrono l'a ignoré
                     const dec = state.decisions[key];
-                    if (dec === 'excluded') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() + ' ignoré', manual: true }); continue; }
-                    if (dec !== 'valid' && dnfRedone(bib, p, list, maxSlot)) { res.excluded.push({ p, key, reason: p.finish.toUpperCase() + ' puis passage refait', redo: true }); continue; }
+                    if (dec === 'excluded') { res.excluded.push({ p, key, reason: statusLabel(p.finish) + ' ignoré', manual: true }); continue; }
+                    if (dec !== 'valid' && dnfRedone(bib, p, list, maxSlot)) { res.excluded.push({ p, key, reason: statusLabel(p.finish) + ' puis passage refait', redo: true }); continue; }
                     skipGaps(minSlot(p.run));
-                    if (idx < nTot()) res.slots[idx] = { gap: true, auto: true, dnf: true, label: p.finish.toUpperCase(), p, key, slot: idx };
+                    if (idx < nTot()) res.slots[idx] = { gap: true, auto: true, dnf: true, label: statusLabel(p.finish), p, key, slot: idx };
                     idx++; continue;
                 }
                 if (p.status !== 'time' && p.run === lastRun && isRunningMark(p.finish)) { runningP = p; continue; }   // parti, pas encore arrivé
@@ -1194,7 +1198,7 @@
             return idx.bib !== undefined && (idx.run !== undefined || idx.finish !== undefined) ? idx : null;
         }
         const isTimeCell = c => Number.isFinite(parseTime(c)) && !/^[+-]/.test(c);
-        const isStatusCell = c => /^(DNF|DNS|DSQ|DQ|ABD|ABS|NC)$/i.test(c);
+        const isStatusCell = c => /^(DNF|DNS|DSQ|DQ|DISQ|ELIM|EL|ABD|ABS|NC)$/i.test(c);
         function parseWebresults(text) {
             let t = String(text || '').replace(/\r/g, '').replace(/ /g, ' ').replace(/​/g, '');
             // vue « Default » : le n° de passage est suivi d'un retour à la ligne avant les temps
@@ -1801,11 +1805,11 @@
             if (x.running && x.running.slot === i && (!s || s.auto)) return td(`<span class="tv runn" title="Pilote parti, en attente de son arrivée${x.running.p.ts ? ' (départ ' + hhmm(new Date(x.running.p.ts).toISOString()) + ')' : ''}"><span class="dots"><i>.</i><i>.</i><i>.</i></span>${pd ? pendSup(pd) : ''}</span>`);
             if (d.source !== 'fds' && !s && !pd) return td(`<button class="tv pend" style="border-color:transparent" onclick="openCellMenu(event,'${bib}',${i})" title="En attente du collage webresults">—</button>`);
             if (pd && (!s || s.auto)) return td(`<button class="tv pend" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(pendTitle(pd))}">${closed ? `<span class="tnote text-rose-400">${noTimeLabel(d.number, i)}</span>` : '—'}${pendSup(pd)}</button>`);
-            const noTime = (title, lbl) => td(`<button class="tv dns" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(title)}">${esc(lbl)}</button>`);
+            const noTime = (title, lbl) => td(`<button class="tv dns ${lbl === 'DSQ' ? 'dsq' : ''}" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(title)}">${esc(lbl)}</button>`);
             if (!s) return closed ? noTime('Manche clôturée sans temps pour ce pilote', noTimeLabel(d.number, i)) : td('<span class="text-slate-600">—</span>');
             if (s.gap && s.auto) return s.cancelled
                 ? td('<span class="tnote text-rose-300" title="Le temps de cette manche a été écarté">Annulée</span>')
-                : s.dnf ? noTime(`${s.label} déclaré par l'opérateur (passage FDS ${s.p.run})`, s.label) : noTime('Manche clôturée sans temps pour ce pilote', noTimeLabel(d.number, i));
+                : s.dnf ? noTime(`${s.label === 'DSQ' ? 'Disqualifié (ELIM sur webresults)' : s.label + ' déclaré par l\'opérateur'} (passage FDS ${s.p.run})`, s.label) : noTime('Manche clôturée sans temps pour ce pilote', noTimeLabel(d.number, i));
             if (s.gap) return td(`<button class="tv cut" style="text-decoration:none" onclick="openCellMenu(event,'${bib}',${i})" title="Manche marquée non courue / annulée">non courue</button>`);
             if (s.ep) return td(`<button class="tv cut" onclick="openCellMenu(event,'${bib}',${i})" title="Erreur de parcours relevée par ${esc(posteTxt(s.ep))}">${fmt(s.t)}<sup class="ep">EP</sup></button>`);
             const best = !isTrial && Number.isFinite(x.__best) && Math.abs(s.t + (s.pen || 0) - x.__best) < 1e-9;
@@ -1863,8 +1867,8 @@
                     h += b('→ Décaler vers la manche suivante', `addGap('${esc(d.number)}',${i})`);
                 }
             } else if (s && s.gap && s.auto && s.dnf) {
-                h += `<br><span class="text-rose-300">${esc(s.label)} déclaré par l'opérateur · passage FDS ${s.p.run}</span></div>`
-                   + b(`✕ Ignorer ce ${esc(s.label)} (passage refait)`, `setDecision('${s.key}','excluded')`);
+                h += `<br><span class="text-rose-300">${s.label === 'DSQ' ? 'Disqualifié dans cette manche (ELIM sur webresults)' : esc(s.label) + ' déclaré par l\'opérateur'} · passage FDS ${s.p.run}</span></div>`
+                   + b(s.label === 'DSQ' ? '✕ Ignorer cette disqualification (erreur de saisie)' : `✕ Ignorer ce ${esc(s.label)} (passage refait)`, `setDecision('${s.key}','excluded')`);
             } else if ((!s || (s.gap && s.auto && !s.cancelled)) && i <= state.closedThrough && !(x.pending && x.pending[i]) && d.source === 'fds') {
                 const cur = noTimeLabel(d.number, i);
                 h += `<br><span class="text-slate-400">Aucun temps dans cette manche clôturée (${cur === 'DNF' ? 'marqué DNF' : 'non parti par défaut'}).</span></div>`
