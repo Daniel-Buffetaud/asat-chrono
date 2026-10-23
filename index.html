@@ -2788,6 +2788,11 @@
             try {
                 const text = await file.text();
                 const isCsv = /\.csv$/i.test(file.name) || /^\s*Pos;Bib;/i.test(text);
+                if (!isCsv) {
+                    let j = null; try { j = JSON.parse(text); } catch (e) {}
+                    // fichier « Competitors » de l'appli FDS : liste de pilotes, sans résultats
+                    if (j && (j.content === 'racersList' || (Array.isArray(j.racersList) && !Array.isArray(j.results)))) { importFdsRacers(j, file.name); return; }
+                }
                 const f = isCsv ? parseFdsCsv(text) : parseFdsFile(text);
                 const nRuns = f.runs.filter(x => x.status === 'time').length;
                 let msg = `Fichier ${isCsv ? 'CSV' : 'FDS'} « ${file.name} »\n${f.racers.length} pilote(s), ${nRuns} temps valable(s).`;
@@ -2805,6 +2810,44 @@
                 document.getElementById('raceDateInput').value = state.meta.date;
                 renderAll();
             } catch (e) { showBanner('Import impossible : ' + (e && e.message ? e.message : e), false); }
+        }
+        // Liste de pilotes FDS : base des pilotes + engagés de l'événement affiché
+        function importFdsRacers(j, fileName) {
+            const list = (j.racersList || []).filter(r => r && Number.isFinite(+r.bib) && String(r.name || '').trim())
+                .map(r => ({ bib: String(r.bib), name: String(r.name).trim().replace(/\s+/g, ' '), team: String(r.team || '').trim(), gender: r.gender === 2 ? 'Femme' : r.gender === 1 ? 'Homme' : '' }))
+                .sort((a, b) => +a.bib - +b.bib);
+            if (!list.length) { showBanner('Ce fichier de pilotes FDS ne contient aucun pilote.', false); return; }
+            const listName = (j.racersListDetails && j.racersListDetails.name) || '';
+            const already = list.filter(r => state.drivers.some(d => d.number === r.bib)).length;
+            const clash = list.filter(r => { const d = state.drivers.find(x => x.number === r.bib); return d && rosterKey(d.name) !== rosterKey(r.name); });
+            let msg = `Liste de pilotes FDS « ${listName || fileName} » : ${list.length} pilote(s).\n\nIls seront ajoutés à la base des pilotes et engagés dans l'événement affiché (${state.meta.name || 'sans nom'}).`;
+            if (already) msg += `\n${already} sont déjà engagés : leur fiche sera complétée (véhicule, genre).`;
+            if (clash.length) msg += `\n⚠ N° déjà pris par un autre pilote dans cet événement : ${clash.map(r => r.bib).join(', ')} — ces pilotes ne seront pas engagés.`;
+            if (!confirm(msg + '\n\nContinuer ?')) return;
+            let added = 0, updated = 0, newRoster = 0;
+            let order = state.drivers.reduce((m, d) => Math.max(m, d.order || 0), 0);
+            for (const r of list) {
+                const k = rosterKey(r.name), cur = registry.roster[k];
+                if (!cur) newRoster++;
+                const known = cur || {};
+                const gender = r.gender || known.gender || registry.pilots[normKey(r.name)] || 'Homme';
+                registry.roster[k] = { ...known, name: known.name || r.name, number: r.bib, gender, category: known.category || registry.vehicles[normKey(r.team)] || '2RM', licence: known.licence || registry.licences[normKey(r.name)] || 'Licence', vehicle: r.team || known.vehicle || '', events: known.events || 0, evIds: known.evIds || [] };
+                if (r.gender) registry.pilots[normKey(r.name)] = r.gender;
+                const d = state.drivers.find(x => x.number === r.bib);
+                if (d) {
+                    if (rosterKey(d.name) !== k) continue;
+                    if (r.team && !d.vehicle) d.vehicle = r.team;
+                    if (r.gender && d.needsReview) d.gender = r.gender;
+                    updated++; continue;
+                }
+                const ro = registry.roster[k];
+                const nd = normDriver({ id: 'r' + Date.now().toString(36) + r.bib, order: ++order, name: ro.name, number: r.bib, gender: ro.gender, category: ro.category, licence: ro.licence, vehicle: ro.vehicle, source: 'manual' }, state.drivers.length);
+                nd.orderAuto = false; nd.planned = true;
+                state.drivers.push(nd); added++;
+            }
+            saveRegistry(); save();
+            showBanner(`Liste FDS importée : ${added} pilote(s) engagé(s)${updated ? `, ${updated} fiche(s) complétée(s)` : ''}${newRoster ? `, ${newRoster} nouveau(x) dans la base` : ''}. Ordre de passage provisoire par n° croissant : ajustez-le dans l'onglet Pilotes si besoin.`, true);
+            evTab = 'pilotes'; renderAll();
         }
         // Passage FDS (avec heures) correspondant à l'heure d'une saisie de commissaire
         function passageAt(bib, iso) {
