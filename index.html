@@ -45,6 +45,7 @@
         .tv.runn .dots i:nth-child(2) { animation-delay: .2s; } .tv.runn .dots i:nth-child(3) { animation-delay: .4s; }
         @keyframes runblink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
         @media (prefers-reduced-motion: reduce) { .tv.runn .dots i { animation: none; } }
+        .tv.dns { color:#fb7185; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; font-weight: 800; letter-spacing: .06em; }
         .tv.pend { color:#64748b; border: 1px dashed rgba(148,163,184,.45); font-weight: 600; }
         .tv.pend sup { font-size: 13px; }
         .evtab { padding: 9px 18px; border-radius: 12px; font-weight: 700; font-size: 15px; border: 1px solid #334155; background:#1e293b; color:#94a3b8; }
@@ -683,7 +684,7 @@
             if (obj && obj.passages && typeof obj.passages === 'object') {
                 for (const bib of Object.keys(obj.passages)) {
                     if (Array.isArray(obj.passages[bib])) s.passages[bib] = obj.passages[bib].filter(p => p && Number.isFinite(+p.run)).map(p => ({ run: +p.run, inter: String(p.inter || ''), finish: String(p.finish || ''), status: ['time', 'dnf', 'nofinish'].includes(p.status) ? p.status : 'nofinish',
-                        ...(Number.isInteger(p.slot) ? { slot: p.slot } : {}), ...(Number.isFinite(p.ts) ? { ts: p.ts } : {}), ...(Number.isFinite(p.tf) ? { tf: p.tf } : {}) }));
+                        ...(Number.isInteger(p.slot) ? { slot: p.slot } : {}), ...(Number.isFinite(p.seq) ? { seq: p.seq } : {}), ...(Number.isFinite(p.ts) ? { ts: p.ts } : {}), ...(Number.isFinite(p.tf) ? { tf: p.tf } : {}) }));
                 }
             }
             if (obj && obj.decisions && typeof obj.decisions === 'object') s.decisions = { ...obj.decisions };
@@ -700,6 +701,7 @@
             if (obj && obj.reports && typeof obj.reports === 'object') s.reports = { ...obj.reports };
             if (obj && obj.vizSel && typeof obj.vizSel === 'object') s.vizSel = { ...obj.vizSel };
             if (obj && obj.slotOv && typeof obj.slotOv === 'object') s.slotOv = { ...obj.slotOv };
+            if (obj && obj.marks && typeof obj.marks === 'object') s.marks = { ...obj.marks };
             if (obj && obj.fdsImport && typeof obj.fdsImport === 'object') s.fdsImport = { ...obj.fdsImport };
             if (obj && obj.liveFollower) s.liveFollower = true;
             if (obj && typeof obj.liveCode === 'string' && /^[A-Z0-9-]{4,24}$/.test(obj.liveCode)) s.liveCode = obj.liveCode;
@@ -829,14 +831,35 @@
         // Renvoie pour un pilote : slots[0..4] (essai + manches), passages écartés, excédentaires, suspects
         function derive(driver) { return applyInfractions(driver, deriveBase(driver)); }
         // Passages issus du fichier FDS : chaque passage porte sa session (= manche), déduite des heures de départ
+        // Un DNF est « refait » quand le pilote repasse dans la même manche :
+        // - manches clôturées : le DNF et le passage suivant tombent dans la même manche ;
+        // - sinon : compter ce DNF comme une manche donnerait au pilote plus de manches que celles déjà commencées.
+        // (webresults range les DNF à part en bas de liste : leur position ne renseigne pas sur l'ordre.)
+        function dnfRedone(bib, p, list, maxSlot) {
+            const later = list.filter(q => q.run > p.run && state.decisions[pkey(bib, q.run)] !== 'excluded');
+            if (!later.some(q => q.status === 'time' || q.status === 'dnf')) return false;
+            const nxt = later[0];
+            const a = maxSlot(p.run), b = maxSlot(nxt.run);
+            if (Number.isFinite(a) && Number.isFinite(b)) return a === b;
+            // manches déjà commencées : celles clôturées + celle en cours (toutes, si aucune clôture)
+            const started = state.closedThrough >= 0 ? Math.min(nTot(), state.closedThrough + 2) : nTot();
+            const own = list.filter(q => q.status === 'time' && state.decisions[pkey(bib, q.run)] !== 'excluded').length;
+            const dnfAfter = later.filter(q => q.status === 'dnf').length;
+            return own + 1 + dnfAfter > started;
+        }
+        // Manche clôturée sans temps : « DNS » par défaut, modifiable en « DNF » par le chrono
+        function noTimeLabel(bib, i) { const m = state.marks && state.marks[bib + '|' + i]; return m === 'DNF' ? 'DNF' : 'DNS'; }
+        function setMark(bib, i, v) { state.marks = state.marks || {}; const k = bib + '|' + i; if (v === 'DNS') delete state.marks[k]; else state.marks[k] = v; save(); renderAll(); }
         function isRunningMark(f) { return /^\s*(\.{2,}|…|)\s*$/.test(String(f || '')); }
         function fileSlot(key, p) { const o = state.slotOv && state.slotOv[key]; return Number.isInteger(o) ? o : p.slot; }
         function deriveFromFile(bib, list, best, res) {
             const byStart = list.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0) || a.run - b.run);
             const lastRun = list.reduce((m, p) => Math.max(m, p.run), 0);
+            const dnfs = [];
             for (const p of byStart) {
                 const key = pkey(bib, p.run);
                 if (p.status !== 'time' && p.status !== 'dnf' && p.run === lastRun && p.ts && !p.tf) { res.running = { p, slot: fileSlot(key, p) }; continue; }
+                if (p.status === 'dnf' && state.decisions[key] !== 'excluded') { const sl = fileSlot(key, p); if (sl < nTot()) dnfs.push({ gap: true, auto: true, dnf: true, label: p.finish.toUpperCase() || 'DNF', p, key, slot: sl }); continue; }
                 if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
                 if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
                 const dec = state.decisions[key];
@@ -854,6 +877,7 @@
                 if (entry.susp) res.suspicious.push(entry);
                 res.slots[slot] = entry; res.validCount++;
             }
+            for (const g of dnfs) if (!res.slots[g.slot]) res.slots[g.slot] = g;
             return res;
         }
         function deriveBase(driver) {
@@ -894,7 +918,16 @@
             let runningP = null;
             for (const p of list) {
                 const key = pkey(bib, p.run);
-                if (p.status === 'dnf') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() }); continue; }
+                if (p.status === 'dnf') {
+                    // DNF / DNS déclaré par l'opérateur : la manche est courue sans temps,
+                    // sauf s'il est suivi d'un nouveau passage du pilote dans la même manche (passage refait), ou si le chrono l'a ignoré
+                    const dec = state.decisions[key];
+                    if (dec === 'excluded') { res.excluded.push({ p, key, reason: p.finish.toUpperCase() + ' ignoré', manual: true }); continue; }
+                    if (dec !== 'valid' && dnfRedone(bib, p, list, maxSlot)) { res.excluded.push({ p, key, reason: p.finish.toUpperCase() + ' puis passage refait', redo: true }); continue; }
+                    skipGaps(minSlot(p.run));
+                    if (idx < nTot()) res.slots[idx] = { gap: true, auto: true, dnf: true, label: p.finish.toUpperCase(), p, key, slot: idx };
+                    idx++; continue;
+                }
                 if (p.status !== 'time' && p.run === lastRun && isRunningMark(p.finish)) { runningP = p; continue; }   // parti, pas encore arrivé
                 if (p.status !== 'time') { res.excluded.push({ p, key, reason: 'sans arrivée' }); res.noFinish.push({ p, key }); continue; }
                 const t = parseTime(p.finish);
@@ -1148,47 +1181,84 @@
         }
 
         // ===================== Lecture du collage webresults =====================
+        // Lecture du texte webresults. Les colonnes sont repérées par l'en-tête du tableau (Bib, Competitor, Team, Run, Inter, Finish…),
+        // quel que soit leur ordre ou les colonnes affichées en plus (catégorie, nation, temps total…). Sans en-tête, lecture par déduction.
+        const WR_COLS = {
+            bib: /^(bib|dossard|n°|no|num(é|e)ro)$/, name: /^(competitor|concurrent|pilote|nom|name|athlete|racer)$/, team: /^(team|équipe|equipe|club|véhicule|vehicule|voiture|car)$/,
+            run: /^(run|manche|passage|essai)$/, inter: /^(inter|int)\.?\s*1?$|^inter\s*1/, finish: /^(finish|arrivée|arrivee|temps|time|result|résultat)$/,
+            total: /^(total|total time|temps total)$/, diff: /^(diff|écart|ecart|gap)$/, rank: /^(rank|rang|pos|position|clt|cl\.)$/
+        };
+        function wrHeader(lower) {
+            const idx = {};
+            lower.forEach((c, i) => { for (const [k, re] of Object.entries(WR_COLS)) if (idx[k] === undefined && re.test(c)) { idx[k] = i; break; } });
+            return idx.bib !== undefined && (idx.run !== undefined || idx.finish !== undefined) ? idx : null;
+        }
+        const isTimeCell = c => Number.isFinite(parseTime(c)) && !/^[+-]/.test(c);
+        const isStatusCell = c => /^(DNF|DNS|DSQ|DQ|ABD|ABS|NC)$/i.test(c);
         function parseWebresults(text) {
-            let t = String(text || '').replace(/\r/g, '').replace(/ /g, ' ').replace(/​/g, '');
+            let t = String(text || '').replace(/\r/g, '').replace(/ /g, ' ').replace(/​/g, '');
             // vue « Default » : le n° de passage est suivi d'un retour à la ligne avant les temps
             t = t.replace(/(\d+\/\d+)[ \t]*\n[ \t]*/g, '$1\t');
+            t = t.replace(/(\tRun)[ \t]*\n[ \t]*(?=(Inter|Finish))/gi, '$1\t');   // en-tête coupé de la vue « Default »
             const rows = [];
             const meta = {};
+            const warn = new Set();
             let prevLine = '';
-            let hdr = null;          // décalages des colonnes Inter / Finish par rapport à « Run », lus dans l'en-tête
+            let hdr = null;          // colonnes repérées dans l'en-tête
             let hasInter = null;
             for (const line of t.split('\n')) {
                 const cells = line.split('\t').map(c => c.trim());
                 const lower = cells.map(c => c.toLowerCase());
-                const hRun = lower.indexOf('run'), hFin = lower.indexOf('finish');
-                if (hRun >= 0 && hFin > hRun && lower.includes('bib')) {
-                    const hInt = lower.findIndex(c => /^inter/.test(c));
-                    hdr = { inter: hInt > hRun ? hInt - hRun : null, finish: hFin - hRun };
-                    hasInter = hdr.inter !== null;
+                const h = cells.length >= 3 ? wrHeader(lower) : null;
+                if (h) {
+                    hdr = h; hasInter = h.inter !== undefined;
+                    if (h.run === undefined) warn.add('colonne « Run » absente : les passages ne peuvent pas être numérotés — affichez la colonne Run sur webresults');
+                    if (h.team === undefined) warn.add('colonne « Team » absente : les véhicules ne sont pas lus');
+                    if (h.name === undefined) warn.add('colonne « Competitor » absente : les noms ne sont pas lus');
                     continue;
                 }
-                const ri = cells.findIndex(c => /^\d+\/\d+$/.test(c));
-                if (ri >= 3 && /^\d+$/.test(cells[ri - 3])) {
-                    const [run, total] = cells[ri].split('/').map(Number);
-                    // sans en-tête : 3 cellules après « Run » = Inter, Finish, Diff ; 2 cellules = Finish, Diff
-                    const after = cells.length - ri - 1;
-                    const off = hdr || (after >= 3 ? { inter: 1, finish: 2 } : { inter: null, finish: 1 });
-                    if (!hdr && hasInter === null) hasInter = off.inter !== null;
-                    const inter = off.inter ? (cells[ri + off.inter] || '') : '';
-                    const finishRaw = cells[ri + off.finish] || '';
-                    let status = 'nofinish', finish = finishRaw;
-                    if (/^(DNF|DNS|DSQ|DQ|ABD|ABS)$/i.test(finishRaw)) status = 'dnf';
-                    else if (Number.isFinite(parseTime(finishRaw))) status = 'time';
-                    rows.push({
-                        bib: cells[ri - 3], name: cells[ri - 2], team: cells[ri - 1], run, total,
-                        inter: (inter === '-' || !Number.isFinite(parseTime(inter))) ? '' : inter,
-                        finish, status
-                    });
+                let r = null;
+                if (hdr && hdr.run !== undefined) {
+                    const runC = cells[hdr.run] || '', bibC = cells[hdr.bib] || '';
+                    const m = /^(\d+)(?:\s*\/\s*(\d+))?$/.exec(runC);
+                    if (m && /^\d{1,4}$/.test(bibC)) {
+                        const finishRaw = hdr.finish !== undefined ? (cells[hdr.finish] || '') : '';
+                        const inter = hdr.inter !== undefined ? (cells[hdr.inter] || '') : '';
+                        r = { bib: bibC, name: hdr.name !== undefined ? cells[hdr.name] || '' : '', team: hdr.team !== undefined ? cells[hdr.team] || '' : '', run: +m[1], total: m[2] ? +m[2] : null, inter, finishRaw };
+                    }
+                }
+                if (!r) {
+                    // lecture par déduction : « n/n » = passage ; le dossard est le dernier nombre entier suivi d'un nom
+                    const ri = cells.findIndex(c => /^\d+\/\d+$/.test(c));
+                    if (ri >= 1) {
+                        let bi = -1;
+                        for (let j = ri - 1; j >= 0; j--) if (/^\d{1,4}$/.test(cells[j]) && j + 1 < ri && /[A-Za-zÀ-ÿ]/.test(cells[j + 1])) { bi = j; break; }
+                        if (bi >= 0) {
+                            const texts = cells.slice(bi + 1, ri).filter(c => /[A-Za-zÀ-ÿ]/.test(c));
+                            const after = cells.slice(ri + 1);
+                            const times = after.filter(c => isTimeCell(c) || isStatusCell(c) || isRunningMark(c) && c !== '');
+                            let inter = '', finishRaw = '';
+                            if (hdr && hdr.finish !== undefined) { finishRaw = cells[hdr.finish] || ''; inter = hdr.inter !== undefined ? cells[hdr.inter] || '' : ''; }
+                            else if (times.length >= 2 && isTimeCell(times[0]) && (isTimeCell(times[1]) || isStatusCell(times[1]) || isRunningMark(times[1]))) { inter = times[0]; finishRaw = times[1]; if (times.length > 2) warn.add('colonnes inattendues après le temps (temps total ?) : affichez l\'en-tête du tableau pour une lecture sûre'); }
+                            else finishRaw = times[0] || after.find(c => c) || '';
+                            if (hasInter === null && !hdr) hasInter = !!inter;
+                            r = { bib: cells[bi], name: texts[0] || '', team: texts[1] || '', run: +cells[ri].split('/')[0], total: +cells[ri].split('/')[1], inter, finishRaw };
+                            if (!hdr) warn.add('en-tête du tableau non trouvé : colonnes lues par déduction');
+                        }
+                    }
+                }
+                if (r) {
+                    const fr = r.finishRaw;
+                    let status = 'nofinish';
+                    if (isStatusCell(fr)) status = 'dnf';
+                    else if (Number.isFinite(parseTime(fr))) status = 'time';
+                    rows.push({ bib: r.bib, name: r.name, team: r.team, run: r.run, total: r.total,
+                        inter: (r.inter === '-' || !Number.isFinite(parseTime(r.inter))) ? '' : r.inter, finish: fr, status });
                     continue;
                 }
                 const l = line.trim();
                 if (!meta.name) {
-                    const m = l.match(/^(.+?)\s+-\s+(Final Results|Live Results|Results|Résultats.*)$/i);
+                    const m = l.match(/^(.+?)\s+-\s+(Final Results|Live Results|Preliminary results|Results|Résultats.*)$/i);
                     if (m) meta.name = m[1].trim();
                 }
                 if (!meta.name && /^\d{2}\/\d{2}\/\d{4}(\s|$)/.test(l) && prevLine && !/races list/i.test(prevLine))
@@ -1199,6 +1269,12 @@
                     if (m) meta.date = m[3] + '-' + m[2] + '-' + m[1];
                 }
             }
+            if (rows.length && rows.every(r => !r.team) && !(hdr && hdr.team === undefined)) warn.add('aucun véhicule lu (colonne Team masquée ?)');
+            let fatal = '';
+            if (hdr && hdr.run === undefined) fatal = 'La colonne « Run » n\'est pas affichée sur webresults : impossible de numéroter les passages. Affichez-la puis recopiez la page.';
+            else if (hdr && hdr.finish === undefined) fatal = hdr.total !== undefined
+                ? 'Seul le temps total est affiché sur webresults : décochez « Display Total Time » pour retrouver le temps de chaque passage, puis recopiez la page.'
+                : 'La colonne « Finish » (temps du passage) n\'est pas affichée sur webresults : affichez-la puis recopiez la page.';
             // dédoublonnage par n° + passage (on garde la ligne la plus complète)
             const map = new Map();
             for (const r of rows) {
@@ -1206,11 +1282,12 @@
                 const prev = map.get(k);
                 if (!prev || (prev.status !== 'time' && r.status === 'time')) map.set(k, r);
             }
-            return { rows: [...map.values()], ordered: rows, meta, hasInter: hasInter !== false };
+            return { rows: fatal ? [] : [...map.values()], ordered: fatal ? [] : rows, meta, hasInter: hasInter !== false, warn: [...warn], fatal };
         }
 
         function applyWebresults(parsed) {
             if (state.fdsImport) return { ok: false, msg: `Cet événement est alimenté par le fichier FDS (import du ${new Date(state.fdsImport.at).toLocaleString('fr-FR')}) : les temps webresults ne sont pas pris en compte, pour ne pas mélanger les deux sources. Réimportez le fichier FDS pour mettre à jour.` };
+            if (parsed.fatal) return { ok: false, msg: parsed.fatal };
             const rows = parsed.rows;
             if (rows.length === 0) return { ok: false, msg: "Aucune ligne de résultat reconnue. Vérifiez que vous avez bien copié la page webresults (Ctrl + A puis Ctrl + C)." };
             const byBib = {};
@@ -1236,6 +1313,9 @@
             });
             const appearance = bibs.slice().sort((a, b) => (firstIdx[b] ? firstIdx[b].i : -1) - (firstIdx[a] ? firstIdx[a].i : -1));
             let maxOrder = state.drivers.reduce((m, d) => Math.max(m, d.order || 0), 0);
+            // rang chronologique de chaque passage (webresults liste du plus récent au plus ancien)
+            const seqOf = new Map();
+            parsed.ordered.forEach((r, i) => { const k = pkey(r.bib, r.run); if (!seqOf.has(k)) seqOf.set(k, parsed.ordered.length - i); });
             for (const bib of appearance) {
                 const list = byBib[bib].sort((a, b) => a.run - b.run);
                 let drv = state.drivers.find(d => d.number === bib);
@@ -1248,7 +1328,7 @@
                     drv.source = 'fds'; drv.planned = false;
                     if (!drv.vehicle && list[0].team) drv.vehicle = list[0].team;
                 }
-                state.passages[bib] = list.map(r => ({ run: r.run, inter: r.inter, finish: r.finish, status: r.status }));
+                state.passages[bib] = list.map(r => ({ run: r.run, inter: r.inter, finish: r.finish, status: r.status, ...(seqOf.has(pkey(bib, r.run)) ? { seq: seqOf.get(pkey(bib, r.run)) } : {}) }));
                 for (const p of state.passages[bib]) if (!oldKeys.has(pkey(bib, p.run) + ':' + p.status)) newPass++;
             }
             // recalcul de l'ordre des pilotes dont l'ordre n'a pas été saisi à la main
@@ -1266,7 +1346,7 @@
             const now = new Date();
             state.lastImport = { at: now.toISOString(), hhmm: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'), passages: rows.length, drivers: bibs.length };
             save();
-            const msg = `Import réussi : ${bibs.length} pilote(s), ${rows.length} passage(s) lus` + (created ? `, ${created} nouveau(x) pilote(s) créé(s)` + (unknown ? ` dont ${unknown} inconnu(s) : genre et/ou catégorie à compléter` : ' (genre et catégorie retrouvés en mémoire)') : '') + `, ${newPass} passage(s) nouveau(x) ou modifié(s).`;
+            const msg = (parsed.warn && parsed.warn.length ? '⚠ ' + parsed.warn.join(' ; ') + '. ' : '') + `Import réussi : ${bibs.length} pilote(s), ${rows.length} passage(s) lus` + (created ? `, ${created} nouveau(x) pilote(s) créé(s)` + (unknown ? ` dont ${unknown} inconnu(s) : genre et/ou catégorie à compléter` : ' (genre et catégorie retrouvés en mémoire)') : '') + `, ${newPass} passage(s) nouveau(x) ou modifié(s).`;
             return { ok: true, msg };
         }
 
@@ -1711,7 +1791,7 @@
                 }
                 const pd = x.pending && x.pending[i];
                 if (pd && !s) h += `<div class="mt-1"><button type="button" class="tv pend" onclick="openCellMenu(event,'${esc(d.number)}',${i})" title="${esc(pendTitle(pd))}">en attente${pendSup(pd)}</button></div>`;
-                if (!s && closed) h += `<div class="text-[11px] text-rose-400 font-semibold mt-1">Pas de temps</div>`;
+                if (!s && closed) h += `<div class="text-[11px] text-rose-400 font-semibold mt-1">${noTimeLabel(d.number, i)}</div>`;
                 return `<td class="p-2 text-center align-middle ${colCls}">${h}</td>`;
             }
             const s = x.slots[i];
@@ -1720,11 +1800,12 @@
             const pd = x.pending && x.pending[i];
             if (x.running && x.running.slot === i && (!s || s.auto)) return td(`<span class="tv runn" title="Pilote parti, en attente de son arrivée${x.running.p.ts ? ' (départ ' + hhmm(new Date(x.running.p.ts).toISOString()) + ')' : ''}"><span class="dots"><i>.</i><i>.</i><i>.</i></span>${pd ? pendSup(pd) : ''}</span>`);
             if (d.source !== 'fds' && !s && !pd) return td(`<button class="tv pend" style="border-color:transparent" onclick="openCellMenu(event,'${bib}',${i})" title="En attente du collage webresults">—</button>`);
-            if (pd && (!s || s.auto)) return td(`<button class="tv pend" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(pendTitle(pd))}">${closed ? '<span class="tnote text-rose-400">Pas de temps</span>' : '—'}${pendSup(pd)}</button>`);
-            if (!s) return td(closed ? '<span class="tnote text-rose-400">Pas de temps</span>' : '<span class="text-slate-600">—</span>');
-            if (s.gap && s.auto) return td(s.cancelled
-                ? '<span class="tnote text-rose-300" title="Le temps de cette manche a été écarté">Annulée</span>'
-                : '<span class="tnote text-rose-400" title="Aucun temps dans cette manche clôturée">Pas de temps</span>');
+            if (pd && (!s || s.auto)) return td(`<button class="tv pend" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(pendTitle(pd))}">${closed ? `<span class="tnote text-rose-400">${noTimeLabel(d.number, i)}</span>` : '—'}${pendSup(pd)}</button>`);
+            const noTime = (title, lbl) => td(`<button class="tv dns" onclick="openCellMenu(event,'${bib}',${i})" title="${esc(title)}">${esc(lbl)}</button>`);
+            if (!s) return closed ? noTime('Manche clôturée sans temps pour ce pilote', noTimeLabel(d.number, i)) : td('<span class="text-slate-600">—</span>');
+            if (s.gap && s.auto) return s.cancelled
+                ? td('<span class="tnote text-rose-300" title="Le temps de cette manche a été écarté">Annulée</span>')
+                : s.dnf ? noTime(`${s.label} déclaré par l'opérateur (passage FDS ${s.p.run})`, s.label) : noTime('Manche clôturée sans temps pour ce pilote', noTimeLabel(d.number, i));
             if (s.gap) return td(`<button class="tv cut" style="text-decoration:none" onclick="openCellMenu(event,'${bib}',${i})" title="Manche marquée non courue / annulée">non courue</button>`);
             if (s.ep) return td(`<button class="tv cut" onclick="openCellMenu(event,'${bib}',${i})" title="Erreur de parcours relevée par ${esc(posteTxt(s.ep))}">${fmt(s.t)}<sup class="ep">EP</sup></button>`);
             const best = !isTrial && Number.isFinite(x.__best) && Math.abs(s.t + (s.pen || 0) - x.__best) < 1e-9;
@@ -1781,6 +1862,13 @@
                     if (!s.susp) h += b('✕ Écarter ce temps (passage refait)', `setDecision('${k}','excluded')`);
                     h += b('→ Décaler vers la manche suivante', `addGap('${esc(d.number)}',${i})`);
                 }
+            } else if (s && s.gap && s.auto && s.dnf) {
+                h += `<br><span class="text-rose-300">${esc(s.label)} déclaré par l'opérateur · passage FDS ${s.p.run}</span></div>`
+                   + b(`✕ Ignorer ce ${esc(s.label)} (passage refait)`, `setDecision('${s.key}','excluded')`);
+            } else if ((!s || (s.gap && s.auto && !s.cancelled)) && i <= state.closedThrough && !(x.pending && x.pending[i]) && d.source === 'fds') {
+                const cur = noTimeLabel(d.number, i);
+                h += `<br><span class="text-slate-400">Aucun temps dans cette manche clôturée (${cur === 'DNF' ? 'marqué DNF' : 'non parti par défaut'}).</span></div>`
+                   + (cur === 'DNF' ? b('↺ Marquer DNS (non parti)', `setMark('${esc(d.number)}',${i},'DNS')`) : b('✎ Marquer DNF (parti, non arrivé)', `setMark('${esc(d.number)}',${i},'DNF')`));
             } else if (s && s.gap && !s.auto) {
                 h += '<br>Manche marquée non courue / annulée.</div>' + b('↺ Rétablir (annuler le décalage)', `removeGap('${esc(d.number)}',${i})`);
             } else if (d.source !== 'fds' && !(x.pending && x.pending[i])) {
@@ -2772,7 +2860,7 @@
             if (sig === pont.last) { pont.at = new Date().toISOString(); pont.err = ''; renderPont(); return; }
             const res = applyWebresults(parsed);
             if (!res.ok) { pont.err = res.msg; renderPont(); return; }
-            pont.last = sig; pont.at = new Date().toISOString(); pont.n++; pont.err = '';
+            pont.last = sig; pont.at = new Date().toISOString(); pont.n++; pont.err = parsed.warn && parsed.warn.length ? '⚠ ' + parsed.warn.join(' ; ') : '';
             document.getElementById('raceNameInput').value = state.meta.name;
             document.getElementById('raceDateInput').value = state.meta.date;
             renderAll();
