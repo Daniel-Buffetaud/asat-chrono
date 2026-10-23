@@ -2431,9 +2431,51 @@
         }
         function liveAfterRender() {
             liveResub();
-            if (liveSubCode && !state.liveFollower) { clearTimeout(liveListTimer); liveListTimer = setTimeout(() => livePublishList(false), 1200); liveAnnounce(); }
+            if (liveSubCode && !state.liveFollower) { clearTimeout(liveListTimer); liveListTimer = setTimeout(() => livePublishList(false), 1200); liveAnnounce(); liveTrack(); }
             renderLive();
         }
+        // Pilote en piste, publié pour les téléphones des postes (pastille de l'en-tête de Poste ASAT)
+        const track = { run: null, fin: null, sig: '', code: null };
+        function liveTrack() {
+            if (!window.FB || !liveSubCode) return;
+            if (track.code !== liveSubCode) { track.run = null; track.fin = null; track.sig = ''; track.code = liveSubCode; }
+            let best = null;
+            const times = [];
+            for (const d of state.drivers) {
+                const x = derive(d);
+                for (let i = nE(); i < nTot(); i++) { const sl = x.slots[i]; if (sl && !sl.gap && Number.isFinite(sl.t)) times.push(sl.t); }
+                if (x.running) {
+                    const ts = x.running.p.ts || 0;
+                    if (!best || ts > best.ts) best = { d, slot: x.running.slot, run: x.running.p.run, ts };
+                }
+            }
+            times.sort((a, b) => a - b);
+            const typ = times.length ? times[Math.floor(times.length / 2)] : 60;
+            const now = Date.now();
+            let doc;
+            if (best) {
+                const r = track.run;
+                if (!r || r.bib !== best.d.number || r.run !== best.run) track.run = { bib: best.d.number, run: best.run, slot: best.slot, startAt: best.ts || now, name: best.d.name, g: best.d.gender === 'Femme' ? 'F' : 'H' };
+                track.fin = null;
+                const t = track.run;
+                doc = { status: 'run', bib: t.bib, name: t.name, g: t.g, startAt: t.startAt, typ };
+            } else if (track.run) {
+                // le pilote n'est plus en piste : temps réel s'il est arrivé, sinon piste libre (DNF, départ annulé)
+                const t = track.run, d = state.drivers.find(x => x.number === t.bib);
+                const sl = d ? derive(d).slots[t.slot] : null;
+                track.run = null;
+                track.fin = sl && !sl.gap && Number.isFinite(sl.t) ? { ...t, time: fmt(sl.t), finAt: now } : null;
+                doc = track.fin ? { status: 'fin', bib: t.bib, name: t.name, g: t.g, startAt: t.startAt, time: track.fin.time, finAt: now, typ } : { status: 'free' };
+            } else if (track.fin && now - track.fin.finAt < 15000) {
+                const t = track.fin; doc = { status: 'fin', bib: t.bib, name: t.name, g: t.g, startAt: t.startAt, time: t.time, finAt: t.finAt, typ };
+            } else doc = { status: 'free' };
+            const sig = JSON.stringify(doc);
+            if (sig === track.sig) return;
+            track.sig = sig;
+            const { fs, doc: dref, setDoc } = window.FB;
+            setDoc(dref(fs, 'events', liveSubCode, 'public', 'track'), { ...doc, at: new Date().toISOString() }).catch(() => { track.sig = ''; });
+        }
+        setInterval(() => { if (track.fin && Date.now() - track.fin.finAt >= 15000) { track.fin = null; liveTrack(); } }, 5000);
         async function liveSignIn(e) {
             e.preventDefault();
             const m = document.getElementById('liveLoginMsg'); m.textContent = '';
