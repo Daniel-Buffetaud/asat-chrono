@@ -2644,7 +2644,7 @@
             el('liveNameHint').textContent = state.meta.name ? '' : 'Conseil : donnez d\'abord un nom à l\'événement, le code en est tiré.';
             const pend = liveDevices.filter(d => d.status === 'pending');
             const st = el('liveState');
-            st.textContent = !has ? 'Hors ligne' : !logged ? 'Non connecté' : !code ? 'Connecté · liaison fermée' : liveErrMsg ? 'Liaison perturbée' : `En direct · ${liveDevices.filter(d => d.status === 'ok' && d.role !== 'dc').length} poste(s)` + (liveDevices.some(d => d.status === 'ok' && d.role === 'dc') ? ' + DC' : '');
+            st.textContent = !has ? 'Hors ligne' : !logged ? 'Non connecté' : !code ? 'Connecté · liaison fermée' : liveErrMsg ? 'Liaison perturbée' : `En direct · ${liveDevices.filter(d => d.status === 'ok' && d.role !== 'dc').length} poste(s)` + ((n => n ? ` + ${n} écran${n > 1 ? 's' : ''} DC` : '')(liveDevices.filter(d => d.status === 'ok' && d.role === 'dc').length));
             st.className = 'text-xs font-bold px-3 py-1 rounded-full ' + (code && !liveErrMsg ? 'bg-emerald-500/20 text-emerald-200' : logged ? 'bg-amber-500/20 text-amber-200' : 'bg-slate-700 text-slate-300');
             const badge = el('liveTabBadge');
             badge.textContent = pend.length ? `${pend.length} en attente` : ''; badge.classList.toggle('hidden', !pend.length);
@@ -2665,7 +2665,7 @@
                 const [t, c] = lbl[d.status] || ['?', 'text-slate-400'];
                 const btn = (label, stt, cls) => `<button type="button" onclick="liveSetDevice('${esc(d.id)}','${stt}')" class="${cls} px-2 py-1 rounded-lg text-xs font-bold">${label}</button>`;
                 return `<div class="flex flex-wrap items-center justify-between gap-2 ${d.status === 'pending' ? 'bg-amber-500/10 rounded-lg p-2' : ''}">
-                    <span><b>${d.role === 'dc' ? '🏁 Directeur de course' : 'Poste ' + esc(d.poste || '?')}</b> · ${esc(d.who || 'sans nom')} <span class="${c} text-xs font-semibold ml-1">${t}</span></span>
+                    <span><b>${d.role === 'dc' ? '🏁 ' + ({ dcs: 'DC stagiaire', cs: 'Collège des commissaires sportifs' }[d.fn] || 'Directeur de course') : 'Poste ' + esc(d.poste || '?')}</b> · ${esc(d.who || 'sans nom')} <span class="${c} text-xs font-semibold ml-1">${t}</span></span>
                     <span class="space-x-1">${d.status !== 'ok' ? btn('Accepter', 'ok', 'bg-emerald-600 hover:bg-emerald-500 text-white') : ''}${d.status !== 'refused' ? btn(d.status === 'ok' ? 'Retirer' : 'Refuser', 'refused', 'bg-rose-500/20 hover:bg-rose-600 text-rose-200 hover:text-white') : ''}</span></div>`;
             }).join('') : '<div class="text-slate-500">Aucun téléphone pour le moment. Chaque commissaire saisit le code dans sa page puis touche « Rejoindre ».</div>';
         }
